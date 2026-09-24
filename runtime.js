@@ -1813,6 +1813,10 @@
     const nativeRemoveChild = Node.prototype.removeChild;
     const nativeAppend = Element.prototype.append;
     const nativePrepend = Element.prototype.prepend;
+    const nativeFragmentAppend = DocumentFragment.prototype.append;
+    const nativeFragmentPrepend = DocumentFragment.prototype.prepend;
+    const nativeInsertAdjacentHTML = Element.prototype.insertAdjacentHTML;
+    const nativeReplaceChildren = Element.prototype.replaceChildren;
     const queueFragmentResources = (parentNode, fragment) => {
       if (!fragment || fragment.nodeType !== 11 || !fragment.querySelectorAll) return false;
       const resources = [...fragment.querySelectorAll('script[src],link[rel="stylesheet"][href]')].filter((node) => isRemoteScript(node) || isRemoteStyle(node));
@@ -1867,6 +1871,50 @@
           }
         }
         else nativePrepend.call(this, node);
+      }
+    };
+    // 部分插件 loader 先把 script 放进 DocumentFragment，再一次性挂到 head。
+    // DocumentFragment 不继承 Element.prototype，这条路径必须单独接管。
+    DocumentFragment.prototype.append = function(...nodes) {
+      for (const node of nodes) {
+        if (isRemoteScript(node)) queueRemoteNode(this, node, null, 'script', 'src');
+        else if (isRemoteStyle(node)) queueRemoteNode(this, node, null, 'style', 'href');
+        else if (queueFragmentResources(this, node)) nativeFragmentAppend.call(this, node);
+        else nativeFragmentAppend.call(this, node);
+      }
+    };
+    DocumentFragment.prototype.prepend = function(...nodes) {
+      for (const node of [...nodes].reverse()) {
+        if (isRemoteScript(node)) queueRemoteNode(this, node, this.firstChild, 'script', 'src');
+        else if (isRemoteStyle(node)) queueRemoteNode(this, node, this.firstChild, 'style', 'href');
+        else if (queueFragmentResources(this, node)) nativeFragmentPrepend.call(this, node);
+        else nativeFragmentPrepend.call(this, node);
+      }
+    };
+    Element.prototype.replaceChildren = function(...nodes) {
+      const remoteNodes = nodes.filter((node) => isRemoteScript(node) || isRemoteStyle(node));
+      nativeReplaceChildren.call(this, ...nodes.filter((node) => !isRemoteScript(node) && !isRemoteStyle(node)));
+      for (const node of remoteNodes) queueRemoteNode(this, node, null, isRemoteScript(node) ? 'script' : 'style', isRemoteScript(node) ? 'src' : 'href');
+    };
+    Element.prototype.insertAdjacentHTML = function(position, html) {
+      if (typeof html !== 'string' || !/(?:<script\b|<link\b)/iu.test(html)) {
+        return nativeInsertAdjacentHTML.call(this, position, html);
+      }
+      const template = document.createElement('template');
+      template.innerHTML = html;
+      const target = position === 'beforebegin' || position === 'afterend' ? this.parentNode : this;
+      if (!target) return nativeInsertAdjacentHTML.call(this, position, html);
+      const children = [...template.content.childNodes];
+      const ordered = position === 'afterbegin' ? children.reverse() : children;
+      for (const child of ordered) {
+        if (isRemoteScript(child)) {
+          queueRemoteNode(target, child, position === 'beforebegin' ? this : position === 'afterbegin' ? this.firstChild : null, 'script', 'src');
+        } else if (isRemoteStyle(child)) {
+          queueRemoteNode(target, child, position === 'beforebegin' ? this : position === 'afterbegin' ? this.firstChild : null, 'style', 'href');
+        } else if (position === 'beforebegin') nativeInsertBefore.call(target, child, this);
+        else if (position === 'afterend') nativeInsertBefore.call(target, child, this.nextSibling);
+        else if (position === 'afterbegin') nativeInsertBefore.call(target, child, this.firstChild);
+        else nativeAppendChild.call(target, child);
       }
     };
     const handleAddedNode = (node) => {
