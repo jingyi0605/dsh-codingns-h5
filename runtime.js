@@ -968,6 +968,14 @@
 	//#endregion
 	//#region src/transport/carrier.ts
 	const TUNNEL_DATA_CHANNEL_LABEL = "codingns-tunnel";
+	/** DataChannel 单消息保守上限；实际对端协商值可能只有 256 KiB。 */
+	const DATA_CHANNEL_FRAGMENT_PAYLOAD_BYTES = 65536;
+	const DATA_CHANNEL_FRAGMENT_MAGIC = new Uint8Array([
+		68,
+		83,
+		70,
+		1
+	]);
 	/** 将浏览器或 Node WebRTC DataChannel 包装为带背压的二进制 Carrier。 */
 	function createDataChannelCarrier(channel, options = {}) {
 		const logger = options.debug ?? createDshTransportDebugLogger({ component: "data-channel" });
@@ -976,13 +984,22 @@
 		const high = options.highWaterMark ?? 1048576;
 		const low = options.lowWaterMark ?? 262144;
 		const timeoutMs = options.backpressureTimeoutMs ?? 3e4;
+		const reassemblyTimeoutMs = options.reassemblyTimeoutMs ?? 3e4;
+		const maxReassemblyBytes = options.maxReassemblyBytes ?? 4194304;
 		let chain = Promise.resolve();
+		let nextFragmentId = 0;
+		const fragments = /* @__PURE__ */ new Map();
+		const clearFragments = () => {
+			for (const fragment of fragments.values()) clearTimeout(fragment.timer);
+			fragments.clear();
+		};
 		const onOpen = () => {
 			state = "open";
 			logger.log("data-channel.open", { label: channel.label ?? null });
 		};
 		const onClose = () => {
 			state = "closed";
+			clearFragments();
 			logger.log("data-channel.close", { label: channel.label ?? null });
 			listeners.clear();
 		};
@@ -990,8 +1007,24 @@
 			const value = event.data;
 			const bytes = toBytes$1(value);
 			if (!bytes) return;
-			logger.log("carrier.receive", { bytes: bytes.byteLength });
-			for (const listener of [...listeners]) listener(bytes);
+			try {
+				const complete = acceptFragment(bytes);
+				if (complete === null) return;
+				logger.log("carrier.receive", {
+					bytes: complete.byteLength,
+					physicalBytes: bytes.byteLength
+				});
+				for (const listener of [...listeners]) listener(complete);
+			} catch (error) {
+				logger.log("carrier.fragment.error", {
+					physicalBytes: bytes.byteLength,
+					error: error instanceof Error ? error.message : String(error)
+				});
+				state = "closed";
+				clearFragments();
+				listeners.clear();
+				channel.close();
+			}
 		};
 		channel.addEventListener("open", onOpen);
 		channel.addEventListener("close", onClose);
@@ -1050,22 +1083,85 @@
 				check();
 			});
 		};
+		const sendPhysical = async (data) => {
+			await waitOpen();
+			if (state !== "open") throw new Error("CodingNS DataChannel 尚未 ready");
+			await waitBackpressure();
+			channel.send(data);
+			logger.log("carrier.send", {
+				bytes: data.byteLength,
+				bufferedAmount: channel.bufferedAmount ?? 0
+			});
+		};
+		const sendLogical = async (data) => {
+			if (data.byteLength <= 65536) {
+				await sendPhysical(data);
+				return;
+			}
+			const chunkCount = Math.ceil(data.byteLength / DATA_CHANNEL_FRAGMENT_PAYLOAD_BYTES);
+			const fragmentId = nextFragmentId = nextFragmentId + 1 >>> 0;
+			logger.log("carrier.fragment.send", {
+				fragmentId,
+				chunkCount,
+				totalBytes: data.byteLength,
+				payloadBytes: DATA_CHANNEL_FRAGMENT_PAYLOAD_BYTES
+			});
+			for (let index = 0; index < chunkCount; index += 1) {
+				const start = index * DATA_CHANNEL_FRAGMENT_PAYLOAD_BYTES;
+				const chunk = data.subarray(start, Math.min(data.byteLength, start + DATA_CHANNEL_FRAGMENT_PAYLOAD_BYTES));
+				await sendPhysical(encodeFragment(fragmentId, index, chunkCount, data.byteLength, chunk));
+			}
+		};
+		const acceptFragment = (data) => {
+			if (!isFragment(data)) return data;
+			const parsed = decodeFragment(data, maxReassemblyBytes);
+			let assembly = fragments.get(parsed.fragmentId);
+			if (!assembly) {
+				const timer = setTimeout(() => fragments.delete(parsed.fragmentId), reassemblyTimeoutMs);
+				assembly = {
+					totalBytes: parsed.totalBytes,
+					chunkCount: parsed.chunkCount,
+					chunks: /* @__PURE__ */ new Map(),
+					receivedBytes: 0,
+					timer
+				};
+				fragments.set(parsed.fragmentId, assembly);
+				logger.log("carrier.fragment.receive", {
+					fragmentId: parsed.fragmentId,
+					chunkCount: parsed.chunkCount,
+					totalBytes: parsed.totalBytes
+				});
+			}
+			if (assembly.totalBytes !== parsed.totalBytes || assembly.chunkCount !== parsed.chunkCount) throw new Error("DataChannel 分片元数据不一致");
+			if (assembly.chunks.has(parsed.index)) return null;
+			assembly.chunks.set(parsed.index, parsed.body);
+			assembly.receivedBytes += parsed.body.byteLength;
+			if (assembly.chunks.size !== assembly.chunkCount) return null;
+			clearTimeout(assembly.timer);
+			fragments.delete(parsed.fragmentId);
+			const result = new Uint8Array(assembly.totalBytes);
+			let offset = 0;
+			for (let index = 0; index < assembly.chunkCount; index += 1) {
+				const chunk = assembly.chunks.get(index);
+				if (!chunk) throw new Error("DataChannel 分片缺失");
+				result.set(chunk, offset);
+				offset += chunk.byteLength;
+			}
+			if (offset !== assembly.totalBytes) throw new Error("DataChannel 分片总长度不一致");
+			logger.log("carrier.fragment.complete", {
+				fragmentId: parsed.fragmentId,
+				chunks: assembly.chunkCount,
+				totalBytes: result.byteLength
+			});
+			return result;
+		};
 		return {
 			get state() {
 				return state;
 			},
 			send(data) {
 				if (!(data instanceof Uint8Array)) return Promise.reject(/* @__PURE__ */ new TypeError("Carrier 只接受 Uint8Array"));
-				chain = chain.then(async () => {
-					await waitOpen();
-					if (state !== "open") throw new Error("CodingNS DataChannel 尚未 ready");
-					await waitBackpressure();
-					channel.send(data);
-					logger.log("carrier.send", {
-						bytes: data.byteLength,
-						bufferedAmount: channel.bufferedAmount ?? 0
-					});
-				});
+				chain = chain.then(() => sendLogical(data));
 				return chain;
 			},
 			subscribe(listener) {
@@ -1075,12 +1171,47 @@
 			async close() {
 				if (state === "closed") return;
 				state = "closed";
+				clearFragments();
 				channel.close();
 				channel.removeEventListener("open", onOpen);
 				channel.removeEventListener("close", onClose);
 				channel.removeEventListener("message", onMessage);
 				listeners.clear();
 			}
+		};
+	}
+	function isFragment(data) {
+		return data.byteLength >= 20 && DATA_CHANNEL_FRAGMENT_MAGIC.every((value, index) => data[index] === value);
+	}
+	function encodeFragment(fragmentId, index, chunkCount, totalBytes, body) {
+		const result = new Uint8Array(20 + body.byteLength);
+		result.set(DATA_CHANNEL_FRAGMENT_MAGIC);
+		const view = new DataView(result.buffer);
+		view.setUint32(4, fragmentId);
+		view.setUint32(8, index);
+		view.setUint32(12, chunkCount);
+		view.setUint32(16, totalBytes);
+		result.set(body, 20);
+		return result;
+	}
+	function decodeFragment(data, maxReassemblyBytes) {
+		const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+		const fragmentId = view.getUint32(4);
+		const index = view.getUint32(8);
+		const chunkCount = view.getUint32(12);
+		const totalBytes = view.getUint32(16);
+		if (chunkCount === 0 || totalBytes <= 65536 || totalBytes > maxReassemblyBytes || index >= chunkCount) throw new Error("DataChannel 分片头无效");
+		if (chunkCount !== Math.ceil(totalBytes / 65536)) throw new Error("DataChannel 分片数量无效");
+		const offset = index * DATA_CHANNEL_FRAGMENT_PAYLOAD_BYTES;
+		const expectedBytes = Math.min(DATA_CHANNEL_FRAGMENT_PAYLOAD_BYTES, totalBytes - offset);
+		const body = data.subarray(20);
+		if (body.byteLength !== expectedBytes) throw new Error("DataChannel 分片长度无效");
+		return {
+			fragmentId,
+			index,
+			chunkCount,
+			totalBytes,
+			body: body.slice()
 		};
 	}
 	function toBytes$1(value) {
