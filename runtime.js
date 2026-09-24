@@ -1652,6 +1652,7 @@
 				if (message.kind === "fetch") {
 					const input = isRecord(message.input) ? message.input : {};
 					const path = resolveRemotePath(typeof input.path === "string" ? input.path : "/");
+					const body = typeof message.body === "string" ? message.body : typeof input.body === "string" ? input.body : void 0;
 					const response = path.startsWith("/assets/") || path.startsWith("/plugins/") ? {
 						status: 200,
 						headers: [["content-type", "application/octet-stream"]],
@@ -1664,7 +1665,7 @@
 						path,
 						method: typeof input.method === "string" ? input.method : "GET",
 						...Array.isArray(input.headers) ? { headers: input.headers } : {},
-						...typeof input.body === "string" ? { body: input.body } : {}
+						...body === void 0 ? {} : { body }
 					});
 					this.postResponse(message.id, {
 						ok: true,
