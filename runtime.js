@@ -1796,13 +1796,13 @@
       remoteLoadChain = remoteLoadChain.then(async () => {
         const response = await call(kind, { path: remotePath(source) });
         if (!response || typeof response.url !== 'string') throw new Error('远程资源加载失败');
-        const replacement = node.cloneNode(true);
-        replacement.setAttribute('data-dsh-bridge-loaded', '1');
-        replacement.setAttribute(attribute, response.url);
-        if (typeof onload === 'function') replacement.addEventListener('load', (event) => onload.call(replacement, event));
-        if (typeof onerror === 'function') replacement.addEventListener('error', (event) => onerror.call(replacement, event));
-        if (beforeNode) nativeInsertBefore.call(parentNode, replacement, beforeNode);
-        else nativeAppendChild.call(parentNode, replacement);
+        // 原地复用节点，保留 loader 通过 addEventListener 注册的 load/error 监听器。
+        // cloneNode 只复制属性，不复制监听器，会让 client-modules 永远等待。
+        node.removeAttribute('data-dsh-bridge-source');
+        node.setAttribute('data-dsh-bridge-loaded', '1');
+        node.setAttribute(attribute, response.url);
+        if (beforeNode) nativeInsertBefore.call(parentNode, node, beforeNode);
+        else nativeAppendChild.call(parentNode, node);
       }).catch((error) => {
         console.error('[dsh-codingns] remote resource load failed', error);
         try {
