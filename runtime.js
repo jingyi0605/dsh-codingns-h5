@@ -1813,6 +1813,18 @@
     const nativeRemoveChild = Node.prototype.removeChild;
     const nativeAppend = Element.prototype.append;
     const nativePrepend = Element.prototype.prepend;
+    const queueFragmentResources = (parentNode, fragment) => {
+      if (!fragment || fragment.nodeType !== 11 || !fragment.querySelectorAll) return false;
+      const resources = [...fragment.querySelectorAll('script[src],link[rel="stylesheet"][href]')].filter((node) => isRemoteScript(node) || isRemoteStyle(node));
+      if (resources.length === 0) return false;
+      for (const node of resources) {
+        const resourceParent = node.parentNode;
+        if (!resourceParent) continue;
+        nativeRemoveChild.call(resourceParent, node);
+        queueRemoteNode(parentNode, node, null, isRemoteScript(node) ? 'script' : 'style', isRemoteScript(node) ? 'src' : 'href');
+      }
+      return true;
+    };
     Node.prototype.appendChild = function(node) {
       if (isRemoteScript(node)) return queueRemoteNode(this, node, null, 'script', 'src');
       if (isRemoteStyle(node)) return queueRemoteNode(this, node, null, 'style', 'href');
@@ -1827,6 +1839,7 @@
       for (const node of nodes) {
         if (isRemoteScript(node)) queueRemoteNode(this, node, null, 'script', 'src');
         else if (isRemoteStyle(node)) queueRemoteNode(this, node, null, 'style', 'href');
+        else if (queueFragmentResources(this, node)) nativeAppend.call(this, node);
         else if (typeof node === 'string' && /<(?:script|link)\b/iu.test(node)) {
           const template = document.createElement('template');
           template.innerHTML = node;
@@ -1843,6 +1856,7 @@
       for (const node of [...nodes].reverse()) {
         if (isRemoteScript(node)) queueRemoteNode(this, node, this.firstChild, 'script', 'src');
         else if (isRemoteStyle(node)) queueRemoteNode(this, node, this.firstChild, 'style', 'href');
+        else if (queueFragmentResources(this, node)) nativePrepend.call(this, node);
         else if (typeof node === 'string' && /<(?:script|link)\b/iu.test(node)) {
           const template = document.createElement('template');
           template.innerHTML = node;
