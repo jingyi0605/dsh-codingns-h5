@@ -1782,10 +1782,11 @@
       const parsed = new URL(value, location.href);
       return parsed.pathname + parsed.search;
     };
-    const isRemoteScript = (node) => node && node.nodeType === 1 && node.tagName === 'SCRIPT' && node.getAttribute('data-dsh-bridge-loaded') !== '1' && isRemoteResource(node.getAttribute('src') || '');
-    const isRemoteStyle = (node) => node && node.nodeType === 1 && node.tagName === 'LINK' && (node.getAttribute('rel') || '').toLowerCase() === 'stylesheet' && node.getAttribute('data-dsh-bridge-loaded') !== '1' && isRemoteResource(node.getAttribute('href') || '');
+    const resourceAttribute = (node, attribute) => node && (node.getAttribute(attribute) || node[attribute] || '');
+    const isRemoteScript = (node) => node && node.nodeType === 1 && node.tagName === 'SCRIPT' && node.getAttribute('data-dsh-bridge-loaded') !== '1' && isRemoteResource(resourceAttribute(node, 'src'));
+    const isRemoteStyle = (node) => node && node.nodeType === 1 && node.tagName === 'LINK' && (node.getAttribute('rel') || '').toLowerCase() === 'stylesheet' && node.getAttribute('data-dsh-bridge-loaded') !== '1' && isRemoteResource(resourceAttribute(node, 'href'));
     const queueRemoteNode = (parentNode, node, beforeNode, kind, attribute) => {
-      const source = node.getAttribute(attribute);
+      const source = resourceAttribute(node, attribute);
       const onload = node.onload;
       const onerror = node.onerror;
       remoteLoadChain = remoteLoadChain.then(async () => {
@@ -1826,6 +1827,15 @@
       for (const node of nodes) {
         if (isRemoteScript(node)) queueRemoteNode(this, node, null, 'script', 'src');
         else if (isRemoteStyle(node)) queueRemoteNode(this, node, null, 'style', 'href');
+        else if (typeof node === 'string' && /<(?:script|link)\b/iu.test(node)) {
+          const template = document.createElement('template');
+          template.innerHTML = node;
+          for (const child of [...template.content.childNodes]) {
+            if (isRemoteScript(child)) queueRemoteNode(this, child, null, 'script', 'src');
+            else if (isRemoteStyle(child)) queueRemoteNode(this, child, null, 'style', 'href');
+            else nativeAppendChild.call(this, child);
+          }
+        }
         else nativeAppend.call(this, node);
       }
     };
@@ -1833,6 +1843,15 @@
       for (const node of [...nodes].reverse()) {
         if (isRemoteScript(node)) queueRemoteNode(this, node, this.firstChild, 'script', 'src');
         else if (isRemoteStyle(node)) queueRemoteNode(this, node, this.firstChild, 'style', 'href');
+        else if (typeof node === 'string' && /<(?:script|link)\b/iu.test(node)) {
+          const template = document.createElement('template');
+          template.innerHTML = node;
+          for (const child of [...template.content.childNodes].reverse()) {
+            if (isRemoteScript(child)) queueRemoteNode(this, child, this.firstChild, 'script', 'src');
+            else if (isRemoteStyle(child)) queueRemoteNode(this, child, this.firstChild, 'style', 'href');
+            else nativeInsertBefore.call(this, child, this.firstChild);
+          }
+        }
         else nativePrepend.call(this, node);
       }
     };
