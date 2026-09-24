@@ -135,6 +135,7 @@ async function startBootstrap(deviceId) {
       dshDeviceId: deviceId,
       webContext: { container: app },
       onStatus: (phase) => {
+        if (!status) return;
         status.textContent = phase === "ticket"
           ? "正在申请 Client ticket…"
           : phase === "webrtc"
