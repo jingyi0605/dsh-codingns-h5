@@ -987,8 +987,12 @@
 		const reassemblyTimeoutMs = options.reassemblyTimeoutMs ?? 3e4;
 		const maxReassemblyBytes = options.maxReassemblyBytes ?? 4194304;
 		let chain = Promise.resolve();
+		let receiveChain = Promise.resolve();
 		let nextFragmentId = 0;
 		const fragments = /* @__PURE__ */ new Map();
+		try {
+			channel.binaryType = "arraybuffer";
+		} catch {}
 		const clearFragments = () => {
 			for (const fragment of fragments.values()) clearTimeout(fragment.timer);
 			fragments.clear();
@@ -1004,27 +1008,39 @@
 			listeners.clear();
 		};
 		const onMessage = (event) => {
-			const value = event.data;
-			const bytes = toBytes$1(value);
-			if (!bytes) return;
-			try {
-				const complete = acceptFragment(bytes);
-				if (complete === null) return;
-				logger.log("carrier.receive", {
-					bytes: complete.byteLength,
-					physicalBytes: bytes.byteLength
-				});
-				for (const listener of [...listeners]) listener(complete);
-			} catch (error) {
-				logger.log("carrier.fragment.error", {
-					physicalBytes: bytes.byteLength,
-					error: error instanceof Error ? error.message : String(error)
-				});
-				state = "closed";
-				clearFragments();
-				listeners.clear();
-				channel.close();
-			}
+			receiveChain = receiveChain.then(async () => {
+				const value = event.data;
+				const bytes = await toBytes$1(value);
+				if (!bytes) {
+					logger.log("carrier.receive.invalid", {
+						dataType: Object.prototype.toString.call(value),
+						valueType: typeof value
+					});
+					return;
+				}
+				try {
+					const complete = acceptFragment(bytes);
+					if (complete === null) return;
+					logger.log("carrier.receive", {
+						bytes: complete.byteLength,
+						physicalBytes: bytes.byteLength,
+						prefix: Array.from(bytes.subarray(0, 8)).map((value2) => value2.toString(16).padStart(2, "0")).join("")
+					});
+					for (const listener of [...listeners]) listener(complete);
+				} catch (error) {
+					logger.log("carrier.fragment.error", {
+						physicalBytes: bytes.byteLength,
+						prefix: Array.from(bytes.subarray(0, 8)).map((value2) => value2.toString(16).padStart(2, "0")).join(""),
+						error: error instanceof Error ? error.message : String(error)
+					});
+					state = "closed";
+					clearFragments();
+					listeners.clear();
+					channel.close();
+				}
+			}).catch((error) => {
+				logger.log("carrier.receive.error", { error: error instanceof Error ? error.message : String(error) });
+			});
 		};
 		channel.addEventListener("open", onOpen);
 		channel.addEventListener("close", onClose);
@@ -1214,10 +1230,11 @@
 			body: body.slice()
 		};
 	}
-	function toBytes$1(value) {
+	async function toBytes$1(value) {
 		if (value instanceof Uint8Array) return new Uint8Array(value);
 		if (value instanceof ArrayBuffer) return new Uint8Array(value.slice(0));
 		if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
+		if (typeof Blob !== "undefined" && value instanceof Blob) return new Uint8Array(await value.arrayBuffer());
 		return null;
 	}
 	//#endregion
