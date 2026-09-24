@@ -1600,15 +1600,22 @@
 		moduleUrls = /* @__PURE__ */ new Map();
 		moduleLoads = /* @__PURE__ */ new Map();
 		sockets = /* @__PURE__ */ new Map();
+		/** WebSocket 只有在 Host 本地 socket 真正打开后才允许 iframe 发送首帧。 */
+		socketReady = /* @__PURE__ */ new Map();
 		iframeValue;
 		sessionIdValue;
 		disposed = false;
 		onMessageBound = (event) => {
 			this.onMessage(event);
 		};
+		debug;
 		constructor(options) {
 			this.options = options;
 			if (typeof document === "undefined") throw new Error("Remote DSH Web Context 只能运行在浏览器");
+			this.debug = options.debug ?? createDshTransportDebugLogger({
+				side: "h5",
+				component: "remote-web-bridge"
+			});
 		}
 		get iframe() {
 			return this.iframeValue;
@@ -1619,6 +1626,7 @@
 		async open(signal) {
 			this.ensureOpen();
 			window.addEventListener("message", this.onMessageBound);
+			window.__DSH_CODINGNS_REMOTE_TRANSPORT__ = this.options.transport;
 			const session = await this.options.transport.webRequest("web.session.open", {
 				...this.options.workspaceId ? { workspaceId: this.options.workspaceId } : {},
 				...this.options.sessionId ? { sessionId: this.options.sessionId } : {}
@@ -1643,6 +1651,8 @@
 			window.removeEventListener("message", this.onMessageBound);
 			for (const streamId of this.sockets.values()) this.options.transport.closeWebStream(streamId);
 			this.sockets.clear();
+			for (const waiter of this.socketReady.values()) waiter.reject(/* @__PURE__ */ new Error("Remote DSH Web Context 已关闭"));
+			this.socketReady.clear();
 			if (this.sessionIdValue !== void 0) try {
 				await this.options.transport.webRequest("web.session.close", { sessionId: this.sessionIdValue });
 			} catch {}
@@ -1650,6 +1660,8 @@
 			this.objectUrls.clear();
 			this.iframeValue?.remove();
 			this.iframeValue = void 0;
+			const transportWindow = window;
+			if (transportWindow.__DSH_CODINGNS_REMOTE_TRANSPORT__ === this.options.transport) delete transportWindow.__DSH_CODINGNS_REMOTE_TRANSPORT__;
 			this.sessionIdValue = void 0;
 		}
 		async prepareBootHtml(boot, signal) {
@@ -1802,20 +1814,52 @@
 						path: resolveRemotePath(typeof input.path === "string" ? input.path : "/")
 					});
 					this.sockets.set(message.id, opened.streamId);
+					let resolveReady;
+					let rejectReady;
+					const ready = new Promise((resolve, reject) => {
+						resolveReady = resolve;
+						rejectReady = reject;
+					});
+					this.socketReady.set(message.id, {
+						resolve: resolveReady,
+						reject: rejectReady
+					});
+					this.debug.log("bridge.ws.open", {
+						id: message.id,
+						streamId: opened.streamId,
+						path: resolveRemotePath(typeof input.path === "string" ? input.path : "/")
+					});
 					this.consumeSocket(message.id, opened.streamId, opened.stream);
-					this.postResponse(message.id, { ok: true });
+					await ready;
+					if (!this.disposed && this.sockets.get(message.id) === opened.streamId) {
+						this.debug.log("bridge.ws.open.response", {
+							id: message.id,
+							streamId: opened.streamId
+						});
+						this.postResponse(message.id, { ok: true });
+					}
 					return;
 				}
 				if (message.kind === "ws.send") {
 					const streamId = this.sockets.get(message.id);
 					if (!streamId) throw new Error("Remote DSH WebSocket 不存在");
 					const body = typeof message.body === "string" ? new TextEncoder().encode(message.body) : toBytes(message.body);
+					this.debug.log("bridge.ws.send", {
+						id: message.id,
+						streamId,
+						bytes: body.byteLength,
+						encoding: typeof message.body === "string" ? "text" : "binary"
+					});
 					this.options.transport.sendWebStream(streamId, "web.ws.data", body, { ...typeof message.body === "string" ? { encoding: "text" } : { binary: true } });
 					return;
 				}
 				if (message.kind === "ws.close") {
 					const streamId = this.sockets.get(message.id);
 					if (streamId) this.options.transport.closeWebStream(streamId);
+					this.debug.log("bridge.ws.close", {
+						id: message.id,
+						streamId
+					});
 					this.sockets.delete(message.id);
 				}
 			} catch (error) {
@@ -1826,20 +1870,48 @@
 			}
 		}
 		async consumeSocket(id, streamId, stream) {
+			let opened = false;
 			try {
-				let opened = false;
 				for await (const value of stream) {
 					if (!opened) {
 						opened = true;
-						if (isRecord(value) && value.opened === true) continue;
+						if (isRecord(value) && value.opened === true) {
+							this.socketReady.get(id)?.resolve();
+							this.socketReady.delete(id);
+							continue;
+						}
 					}
-					if (value instanceof Uint8Array) this.postEvent(id, "message", value.buffer);
-					else this.postEvent(id, "message", typeof value === "string" ? value : JSON.stringify(value));
+					if (value instanceof Uint8Array) {
+						this.debug.log("bridge.ws.message", {
+							id,
+							streamId,
+							bytes: value.byteLength,
+							encoding: "binary"
+						});
+						this.postEvent(id, "message", value.buffer);
+					} else {
+						const body = typeof value === "string" ? value : JSON.stringify(value);
+						this.debug.log("bridge.ws.message", {
+							id,
+							streamId,
+							bytes: new TextEncoder().encode(body).byteLength,
+							encoding: "text"
+						});
+						this.postEvent(id, "message", body);
+					}
 				}
 				this.postEvent(id, "close", void 0);
 			} catch (error) {
+				const failure = error instanceof Error ? error : /* @__PURE__ */ new Error("Remote DSH WebSocket 流失败");
+				this.socketReady.get(id)?.reject(failure);
+				this.socketReady.delete(id);
 				this.postEvent(id, "error", error instanceof Error ? error.message : "Remote DSH WebSocket 流失败");
 			} finally {
+				if (!opened) {
+					const failure = /* @__PURE__ */ new Error("Remote DSH WebSocket 未收到 Host open 响应");
+					this.socketReady.get(id)?.reject(failure);
+					this.socketReady.delete(id);
+				}
 				if (this.sockets.get(id) === streamId) this.sockets.delete(id);
 			}
 		}
@@ -1869,12 +1941,23 @@
     // 自己的 Relay/WebRTC，否则会把信令 WebSocket 当成本地 DSH Web 路径转发，
     // 形成递归连接并持续触发 /signaling/signal 失败。
     globalThis.__DSH_CODINGNS_REMOTE_WEB_CONTEXT__ = true;
+    const bridgeDebugEnabled = (() => {
+      try {
+        const query = new URL(parent.location.href).searchParams.get('dshDebug');
+        return /^(1|true|yes|on)$/iu.test(query || '');
+      } catch { return false; }
+    })();
+    const bridgeLog = (event, fields = {}) => {
+      if (!bridgeDebugEnabled) return;
+      console.info('[dsh-codingns:tunnel]', { at: new Date().toISOString(), side: 'h5', component: 'remote-web-bridge', event, ...fields });
+    };
     const pending = new Map();
     let nextId = 0;
     let remoteLoadChain = Promise.resolve();
     const call = (kind, input, body) => new Promise((resolve, reject) => {
       const id = String(++nextId);
       pending.set(id, { resolve, reject });
+      bridgeLog('bridge.call', { kind, id, path: input && typeof input.path === 'string' ? input.path : undefined });
       parent.postMessage({ kind, id, input, body }, '*');
     });
     // srcdoc 的 location.href 是 about:srcdoc，不能作为相对 URL 的基址。
@@ -2092,21 +2175,50 @@
     // 重建时都会重新出现。通过点击 DSH 自己的确认按钮关闭它，既能让
     // DSH 完成状态更新，也能触发 OnboardingModal 恢复 #root.inert。
     const welcomeTitles = new Set(['内测声明', 'Welcome Notice', 'Beta Notice', 'Internal Testing Notice']);
+    const welcomeButtons = new Set(['继续', 'Continue']);
     const normalizeText = (value) => String(value || '').replace(/\s+/gu, ' ').trim();
+    const welcomeTitle = (root) => normalizeText(root.querySelector('h1,h2,h3,[role="heading"],[data-testid="modal-title"]')?.textContent || root.getAttribute('aria-label'));
+    const welcomeRoots = () => {
+      const roots = new Set(document.querySelectorAll('[role="dialog"],dialog,[class*="onboardingOverlay"]'));
+      // 兼容没有 role/aria-modal 的旧版 Modal：从标题向上找到包含按钮的最近容器。
+      for (const heading of document.querySelectorAll('h1,h2,h3,[role="heading"]')) {
+        if (!welcomeTitles.has(normalizeText(heading.textContent))) continue;
+        let root = heading;
+        for (let depth = 0; depth < 8 && root; depth += 1, root = root.parentElement) {
+          if (root.querySelector('button')) {
+            roots.add(root);
+            break;
+          }
+        }
+      }
+      return roots;
+    };
+    const hideWelcomeRoot = (root) => {
+      root.setAttribute('hidden', '');
+      root.setAttribute('aria-hidden', 'true');
+      if (root instanceof HTMLElement) root.style.display = 'none';
+      // CSS 隐藏不会触发 DSH OnboardingModal 的 cleanup，必须同步解除 inert。
+      const appRoot = document.getElementById('root');
+      if (appRoot) appRoot.inert = false;
+    };
     const acknowledgeRemoteWelcome = () => {
-      const dialogs = document.querySelectorAll('[role="dialog"][aria-modal="true"]');
-      for (const dialog of dialogs) {
-        const title = normalizeText(dialog.querySelector('h1,h2,h3,[data-testid="modal-title"]')?.textContent);
-        if (!welcomeTitles.has(title)) continue;
-        const button = [...dialog.querySelectorAll('button')].find((candidate) => {
-          const label = normalizeText(candidate.textContent);
-          return !candidate.disabled && (label === '继续' || label === 'Continue');
-        });
-        if (!button || button.dataset.dshCodingnsAutoAcknowledged === '1') continue;
+      for (const root of welcomeRoots()) {
+        if (!welcomeTitles.has(welcomeTitle(root))) continue;
+        const button = [...root.querySelectorAll('button')].find((candidate) => !candidate.disabled && welcomeButtons.has(normalizeText(candidate.textContent)));
+        if (!button || button.dataset.dshCodingnsAutoAcknowledged === '1') {
+          if (!button) hideWelcomeRoot(root);
+          continue;
+        }
         button.dataset.dshCodingnsAutoAcknowledged = '1';
         // 等待当前 React 提交完成后再触发事件，确保 onClick 已经绑定。
         queueMicrotask(() => {
           if (button.isConnected && !button.disabled) button.click();
+          setTimeout(() => {
+            // 某些构建把 React 事件委托绑定放在 effect 中，首个 click 可能早于委托注册；
+            // 若弹窗仍在 DOM 中，补一次点击，仍未关闭则直接隐藏并解除 inert。
+            if (button.isConnected && !button.disabled) button.click();
+            if (root.isConnected) hideWelcomeRoot(root);
+          }, 0);
         });
       }
     };
@@ -2176,22 +2288,27 @@
         this.readyState = RemoteWebSocket.CONNECTING;
         this._listeners = new Map();
         window.__dshRemoteSockets.set(this._id = String(++nextId), this);
+        bridgeLog('bridge.ws.open', { id: this._id, path: new URL(this.url, resourceBase()).pathname });
         call('ws.open', { path: new URL(this.url, resourceBase()).pathname }).then(() => {
           if (this.readyState !== RemoteWebSocket.CONNECTING) return;
           this.readyState = RemoteWebSocket.OPEN;
+          bridgeLog('bridge.ws.open.response', { id: this._id });
           this._emit('open', new Event('open'));
         }).catch((error) => {
+          bridgeLog('bridge.ws.open.error', { id: this._id, error: error instanceof Error ? error.message : String(error) });
           this.readyState = RemoteWebSocket.CLOSED;
           this._emit('error', new Error(error));
         });
       }
       send(value) {
         if (this.readyState !== RemoteWebSocket.OPEN) throw new Error('WebSocket is not open');
+        bridgeLog('bridge.ws.send', { id: this._id, bytes: typeof value === 'string' ? new TextEncoder().encode(value).byteLength : value?.byteLength, encoding: typeof value === 'string' ? 'text' : 'binary' });
         parent.postMessage({ kind: 'ws.send', id: this._id, body: typeof value === 'string' ? value : value }, '*');
       }
       close(code, reason) {
         if (this.readyState === RemoteWebSocket.CLOSING || this.readyState === RemoteWebSocket.CLOSED) return;
         this.readyState = RemoteWebSocket.CLOSING;
+        bridgeLog('bridge.ws.close', { id: this._id, code: code || 1000 });
         parent.postMessage({ kind: 'ws.close', id: this._id, input: { code, reason } }, '*');
         this.readyState = RemoteWebSocket.CLOSED;
         this._emit('close', new CloseEvent('close', { code: code || 1000, reason: reason || '' }));
@@ -2264,10 +2381,17 @@
         }
       })();
     };
+    const parentTransport = (() => {
+      try { return parent.__DSH_CODINGNS_REMOTE_TRANSPORT__; } catch { return undefined; }
+    })();
     globalThis.__DSH_TRANSPORT__ = {
       fetch: window.fetch.bind(window),
       openStream: openRemoteStream,
       ownsHost: false,
+      generation: parentTransport?.getGeneration?.bind(parentTransport),
+      onGenerationChange: parentTransport?.onGenerationChange?.bind(parentTransport),
+      reconnect: parentTransport?.reconnect?.bind(parentTransport),
+      close: parentTransport?.close?.bind(parentTransport),
     };
     const NativeEventSource = globalThis.EventSource;
     class RemoteEventSource {
