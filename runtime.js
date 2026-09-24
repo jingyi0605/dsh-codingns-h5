@@ -503,6 +503,7 @@
 		} catch {
 			return envelope.body;
 		}
+		if (envelope.meta.encoding === "text" && envelope.body) return new TextDecoder().decode(envelope.body);
 		return envelope.body ?? envelope.meta.payload;
 	}
 	function legacyEnvelope(value) {
