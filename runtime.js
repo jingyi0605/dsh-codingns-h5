@@ -1567,7 +1567,8 @@
 			const styleNodes = [...documentValue.querySelectorAll("link[rel=\"stylesheet\"][href]")];
 			for (const node of [...documentValue.querySelectorAll("link")]) {
 				const rel = (node.getAttribute("rel") ?? "").toLowerCase();
-				if (rel === "modulepreload" || rel === "manifest" || rel === "icon") node.remove();
+				const as = (node.getAttribute("as") ?? "").toLowerCase();
+				if (rel === "modulepreload" || rel === "manifest" || rel === "icon" || rel === "preload" && as === "script") node.remove();
 			}
 			await Promise.all([
 				...scriptNodes.map(async (node) => {
