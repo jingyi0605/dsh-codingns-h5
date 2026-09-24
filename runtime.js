@@ -585,6 +585,7 @@
 				this.readyResolve = resolve;
 				this.readyReject = reject;
 			});
+			this.readyValue.catch(() => void 0);
 			if (this.options.role === "client") this.sendHello();
 			this.startHeartbeat();
 		}
@@ -1466,10 +1467,7 @@
 			})
 		});
 		const generation = options.generation ?? 1;
-		const hostScope = {
-			hostId: ticket.dshDeviceId,
-			kind: "remote"
-		};
+		const hostScope = resolveDshHostScope(ticket);
 		const session = new DshSession({
 			carrier: connection.carrier,
 			role: "client",
@@ -1540,6 +1538,22 @@
 		const device = requested === void 0 ? response.devices.find((item) => item.online && item.status === "active") : response.devices.find((item) => item.dshDeviceId === requested && item.online && item.status === "active");
 		if (!device) throw new Error(requested ? `DSH 设备不可用: ${requested}` : "没有可用的 DSH Host");
 		return device;
+	}
+	/**
+	* HostScope 是线上 Tunnel 的共享身份，不是两端各自的视角。
+	* Host Runtime 当前以 local 作为 canonical kind；旧 Control API 未下发
+	* hostScope 时也必须回退到同一值，否则首个 session.hello 会被 Host 拒绝。
+	*/
+	function resolveDshHostScope(ticket) {
+		const scope = ticket.hostScope;
+		if (scope !== void 0) {
+			if (scope.hostId !== ticket.dshDeviceId) throw new Error("DSH Ticket HostScope 与设备不一致");
+			return scope;
+		}
+		return {
+			hostId: ticket.dshDeviceId,
+			kind: "local"
+		};
 	}
 	function createPeerConnection(options) {
 		const Constructor = globalThis.RTCPeerConnection;
