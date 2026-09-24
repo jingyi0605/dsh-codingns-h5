@@ -1456,8 +1456,10 @@
 	/** 独立 H5 页面使用的入口；Control API 会话通过 HttpOnly Cookie 提供。 */
 	async function startDshH5BrowserBootstrap(options) {
 		const signal = options.signal;
+		options.onStatus?.("ticket");
 		const device = chooseDshDevice(await options.controlApi.listDevices(signal), options.dshDeviceId);
 		const ticket = await options.controlApi.createClientTicket(device.dshDeviceId, signal);
+		options.onStatus?.("webrtc");
 		const connection = await connectWebRtcClient({
 			signalingTicket: ticket,
 			signalingSocketFactory: (url) => new WebSocket(url),
@@ -1487,13 +1489,15 @@
 		let webContext;
 		try {
 			session.start();
-			await session.waitReady(signal);
+			await waitForSessionReady(session, signal, 15e3);
+			options.onStatus?.("session-ready");
 			if (options.webContext) {
 				webContext = new RemoteDshWebContext({
 					...options.webContext,
 					transport
 				});
-				await webContext.open(signal);
+				options.onStatus?.("remote-web");
+				await withTimeout(webContext.open(signal), signal, 3e4, "读取远程 DSH Web 超时");
 			}
 			return {
 				dshDeviceId: device.dshDeviceId,
@@ -1513,6 +1517,27 @@
 			await transport.close();
 			await connection.close();
 			throw error;
+		}
+	}
+	async function waitForSessionReady(session, signal, timeoutMs) {
+		await withTimeout(session.waitReady(signal), signal, timeoutMs, "等待 DSH session.ready 超时");
+	}
+	async function withTimeout(promise, signal, timeoutMs, message) {
+		if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : /* @__PURE__ */ new Error("请求已取消");
+		let timer;
+		let removeAbort;
+		try {
+			return await Promise.race([promise, new Promise((_, reject) => {
+				timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+				if (signal) {
+					const onAbort = () => reject(signal.reason instanceof Error ? signal.reason : /* @__PURE__ */ new Error("请求已取消"));
+					signal.addEventListener("abort", onAbort, { once: true });
+					removeAbort = () => signal.removeEventListener("abort", onAbort);
+				}
+			})]);
+		} finally {
+			if (timer !== void 0) clearTimeout(timer);
+			removeAbort?.();
 		}
 	}
 	/** 使用同源或跨域 HttpOnly Cookie 调用控制站，不读取 Cookie 内容。 */

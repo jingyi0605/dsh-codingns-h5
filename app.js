@@ -118,7 +118,7 @@ async function startBootstrap(deviceId) {
   const status = document.querySelector("#status");
   const buttons = [...document.querySelectorAll("[data-device-id]")];
   buttons.forEach((button) => setBusy(button, true));
-  status.textContent = "正在申请 Client ticket…";
+    status.textContent = "正在申请 Client ticket…";
   try {
     const api = window.DshCodingNsH5;
     if (!api) throw new Error("H5 runtime 尚未加载");
@@ -127,6 +127,15 @@ async function startBootstrap(deviceId) {
       controlApi: api.createHttpDshH5ControlApi(controlApiBaseUrl),
       dshDeviceId: deviceId,
       webContext: { container: app },
+      onStatus: (phase) => {
+        status.textContent = phase === "ticket"
+          ? "正在申请 Client ticket…"
+          : phase === "webrtc"
+            ? "正在建立加密 WebRTC 通道…"
+            : phase === "session-ready"
+              ? "WebRTC 已建立，正在协商 DSH Session…"
+              : "正在读取远程 DSH Web…";
+      },
     });
     window.dispatchEvent(new CustomEvent("dsh-bootstrap-ready", { detail: { deviceId, runtime: activeRuntime } }));
   } catch (error) {
