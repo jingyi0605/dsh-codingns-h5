@@ -1,0 +1,40 @@
+:root {
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #101216;
+  color: #f4f5f7;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; background: #101216; }
+.shell { width: min(720px, calc(100% - 32px)); margin: 0 auto; padding: 11vh 0 64px; }
+.brand-block { margin-bottom: 28px; }
+.eyebrow { margin: 0 0 10px; color: #8d96a8; font-size: 11px; font-weight: 700; letter-spacing: .16em; }
+h1, h2, h3, p { margin-top: 0; }
+h1 { margin-bottom: 12px; font-size: clamp(36px, 8vw, 64px); line-height: 1; letter-spacing: -.03em; }
+h2 { margin-bottom: 8px; font-size: 24px; }
+h3 { margin-bottom: 5px; font-size: 17px; }
+.summary, .muted { color: #9ba3b2; line-height: 1.6; }
+.panel { min-height: 230px; padding: 24px; border: 1px solid #2a303b; border-radius: 8px; background: #171a20; box-shadow: 0 20px 70px rgb(0 0 0 / 24%); }
+.form { display: grid; gap: 16px; max-width: 430px; }
+label { display: grid; gap: 7px; color: #c9ced8; font-size: 13px; }
+input { width: 100%; min-height: 42px; padding: 0 12px; border: 1px solid #363d4a; border-radius: 6px; background: #101216; color: #f4f5f7; font: inherit; }
+button { min-height: 40px; padding: 0 14px; border: 1px solid #3a4351; border-radius: 6px; color: #e8ebf0; background: #202630; font: inherit; cursor: pointer; }
+button:hover:not(:disabled) { border-color: #8290a8; }
+button:disabled { cursor: wait; opacity: .55; }
+.primary { border-color: #6e8cff; background: #546ee6; color: white; }
+.quiet { min-height: 32px; padding: 0 10px; background: transparent; }
+.panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+.device-list { display: grid; gap: 10px; }
+.device-card { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px; border: 1px solid #2d3440; border-radius: 7px; background: #1d222b; }
+.device-card p { margin-bottom: 0; }
+.mono { color: #b8c0d0; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+.empty, .loading { padding: 28px 0; color: #9ba3b2; }
+.error { color: #ff8f8f; line-height: 1.5; }
+.success { color: #9fe1b2; }
+.status { margin: 18px 0 0; min-height: 1.6em; }
+.handoff { margin-top: 16px; padding: 14px; border-left: 3px solid #6e8cff; background: #1d222b; }
+.handoff p { margin: 7px 0 0; }
+.spinner { display: inline-block; width: 14px; height: 14px; margin-right: 8px; border: 2px solid #566173; border-top-color: #9fb0ff; border-radius: 50%; vertical-align: -2px; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (max-width: 520px) { .shell { width: min(100% - 20px, 720px); padding-top: 48px; } .panel { padding: 18px; } .device-card { align-items: flex-start; flex-direction: column; } .device-card button { width: 100%; } }

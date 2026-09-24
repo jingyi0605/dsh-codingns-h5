@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="DSH-CodingNS 远程访问引导" />
+    <title>DSH-CodingNS 远程访问</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="brand-block">
+        <p class="eyebrow">DSH-CODINGNS</p>
+        <h1>远程 DSH</h1>
+        <p class="summary">登录控制站，选择在线设备，然后进入该设备自己的 DSH Web 环境。</p>
+      </section>
+
+      <section id="app" class="panel" aria-live="polite">
+        <p class="muted">正在加载引导服务…</p>
+      </section>
+    </main>
+    <script src="./config.js"></script>
+    <script src="./runtime.js"></script>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
