@@ -1602,6 +1602,13 @@
 					path
 				}, signal));
 				const references = collectRelativeReferences(source, /\.(?:js)(?:\?[^\s"'`)]*)?$/u);
+				if (isH5DebugEnabled() && path.startsWith("/plugins/??")) {
+					const candidates = [...source.matchAll(/["'`]([^"'`]*client\.pdf[^"'`]*)["'`]/gu)].map((match) => match[1]).filter((value) => typeof value === "string");
+					if (candidates.length > 0) console.debug("[dsh-codingns] plugin dependency references", {
+						path,
+						candidates: [...new Set(candidates)].slice(0, 20)
+					});
+				}
 				const replacements = await Promise.all(references.map(async (reference) => {
 					const dependencyPath = resolveRelativeAssetPath(path, reference);
 					return [reference, await this.loadScript(dependencyPath, signal)];
@@ -2020,6 +2027,13 @@
 		if (/\.svg(?:$|\?)/u.test(path)) return "image/svg+xml";
 		if (/\.png(?:$|\?)/u.test(path)) return "image/png";
 		return "application/octet-stream";
+	}
+	function isH5DebugEnabled() {
+		try {
+			return new URLSearchParams(globalThis.location?.search ?? "").get("dshDebug") === "1";
+		} catch {
+			return false;
+		}
 	}
 	//#endregion
 	//#region src/client/dsh-h5-bootstrap.ts
