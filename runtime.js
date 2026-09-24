@@ -2074,6 +2074,30 @@
     new MutationObserver((records) => {
       for (const record of records) for (const node of record.addedNodes) handleAddedNode(node);
     }).observe(document, { childList: true, subtree: true });
+    // 远程模式的 DSH Web 使用 memory persistence，欢迎声明在每次 iframe
+    // 重建时都会重新出现。通过点击 DSH 自己的确认按钮关闭它，既能让
+    // DSH 完成状态更新，也能触发 OnboardingModal 恢复 #root.inert。
+    const welcomeTitles = new Set(['内测声明', 'Welcome Notice', 'Beta Notice', 'Internal Testing Notice']);
+    const normalizeText = (value) => String(value || '').replace(/\s+/gu, ' ').trim();
+    const acknowledgeRemoteWelcome = () => {
+      const dialogs = document.querySelectorAll('[role="dialog"][aria-modal="true"]');
+      for (const dialog of dialogs) {
+        const title = normalizeText(dialog.querySelector('h1,h2,h3,[data-testid="modal-title"]')?.textContent);
+        if (!welcomeTitles.has(title)) continue;
+        const button = [...dialog.querySelectorAll('button')].find((candidate) => {
+          const label = normalizeText(candidate.textContent);
+          return !candidate.disabled && (label === '继续' || label === 'Continue');
+        });
+        if (!button || button.dataset.dshCodingnsAutoAcknowledged === '1') continue;
+        button.dataset.dshCodingnsAutoAcknowledged = '1';
+        // 等待当前 React 提交完成后再触发事件，确保 onClick 已经绑定。
+        queueMicrotask(() => {
+          if (button.isConnected && !button.disabled) button.click();
+        });
+      }
+    };
+    acknowledgeRemoteWelcome();
+    new MutationObserver(acknowledgeRemoteWelcome).observe(document, { childList: true, subtree: true });
     addEventListener('message', (event) => {
       const value = event.data;
       if (!value || value.kind === undefined) return;
