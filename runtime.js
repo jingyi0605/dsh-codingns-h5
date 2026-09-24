@@ -1786,23 +1786,32 @@
     const isRemoteStyle = (node) => node && node.nodeType === 1 && node.tagName === 'LINK' && (node.getAttribute('rel') || '').toLowerCase() === 'stylesheet' && node.getAttribute('data-dsh-bridge-loaded') !== '1' && isRemoteResource(node.getAttribute('href') || '');
     const queueRemoteNode = (parentNode, node, beforeNode, kind, attribute) => {
       const source = node.getAttribute(attribute);
+      const onload = node.onload;
+      const onerror = node.onerror;
       remoteLoadChain = remoteLoadChain.then(async () => {
         const response = await call(kind, { path: remotePath(source) });
         if (!response || typeof response.url !== 'string') throw new Error('远程资源加载失败');
         const replacement = node.cloneNode(true);
         replacement.setAttribute('data-dsh-bridge-loaded', '1');
         replacement.setAttribute(attribute, response.url);
+        if (typeof onload === 'function') replacement.addEventListener('load', (event) => onload.call(replacement, event));
+        if (typeof onerror === 'function') replacement.addEventListener('error', (event) => onerror.call(replacement, event));
         if (beforeNode) nativeInsertBefore.call(parentNode, replacement, beforeNode);
         else nativeAppendChild.call(parentNode, replacement);
       }).catch((error) => {
         console.error('[dsh-codingns] remote resource load failed', error);
-        try { node.dispatchEvent(new Event('error')); } catch {}
+        try {
+          if (typeof onerror === 'function') onerror.call(node, error);
+          else node.dispatchEvent(new Event('error'));
+        } catch {}
       });
       return node;
     };
     const nativeAppendChild = Node.prototype.appendChild;
     const nativeInsertBefore = Node.prototype.insertBefore;
     const nativeRemoveChild = Node.prototype.removeChild;
+    const nativeAppend = Element.prototype.append;
+    const nativePrepend = Element.prototype.prepend;
     Node.prototype.appendChild = function(node) {
       if (isRemoteScript(node)) return queueRemoteNode(this, node, null, 'script', 'src');
       if (isRemoteStyle(node)) return queueRemoteNode(this, node, null, 'style', 'href');
@@ -1812,6 +1821,20 @@
       if (isRemoteScript(node)) return queueRemoteNode(this, node, beforeNode, 'script', 'src');
       if (isRemoteStyle(node)) return queueRemoteNode(this, node, beforeNode, 'style', 'href');
       return nativeInsertBefore.call(this, node, beforeNode);
+    };
+    Element.prototype.append = function(...nodes) {
+      for (const node of nodes) {
+        if (isRemoteScript(node)) queueRemoteNode(this, node, null, 'script', 'src');
+        else if (isRemoteStyle(node)) queueRemoteNode(this, node, null, 'style', 'href');
+        else nativeAppend.call(this, node);
+      }
+    };
+    Element.prototype.prepend = function(...nodes) {
+      for (const node of [...nodes].reverse()) {
+        if (isRemoteScript(node)) queueRemoteNode(this, node, this.firstChild, 'script', 'src');
+        else if (isRemoteStyle(node)) queueRemoteNode(this, node, this.firstChild, 'style', 'href');
+        else nativePrepend.call(this, node);
+      }
     };
     const handleAddedNode = (node) => {
       if (!node || node.nodeType !== 1) return;
