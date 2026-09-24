@@ -7,6 +7,7 @@
 
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 320px; background: #101216; }
+html, body { min-height: 100%; }
 .shell { width: min(720px, calc(100% - 32px)); margin: 0 auto; padding: 11vh 0 64px; }
 .brand-block { margin-bottom: 28px; }
 .eyebrow { margin: 0 0 10px; color: #8d96a8; font-size: 11px; font-weight: 700; letter-spacing: .16em; }
@@ -38,3 +39,31 @@ button:disabled { cursor: wait; opacity: .55; }
 .spinner { display: inline-block; width: 14px; height: 14px; margin-right: 8px; border: 2px solid #566173; border-top-color: #9fb0ff; border-radius: 50%; vertical-align: -2px; animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (max-width: 520px) { .shell { width: min(100% - 20px, 720px); padding-top: 48px; } .panel { padding: 18px; } .device-card { align-items: flex-start; flex-direction: column; } .device-card button { width: 100%; } }
+
+/* 远程 DSH Web 接管页面后，移除引导页的视觉边界，让 iframe 占满视口。 */
+body.remote-web-mode { overflow: hidden; }
+body.remote-web-mode .shell {
+  width: 100%;
+  height: 100vh;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+}
+body.remote-web-mode .brand-block { display: none; }
+body.remote-web-mode #app {
+  width: 100%;
+  height: 100vh;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: #101216;
+  box-shadow: none;
+}
+body.remote-web-mode #app > iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 100vh;
+  border: 0;
+}

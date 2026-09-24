@@ -8,7 +8,12 @@ let activeRuntime = null;
 
 render();
 
+function setRemoteWebMode(enabled) {
+  document.body.classList.toggle("remote-web-mode", enabled);
+}
+
 function render() {
+  setRemoteWebMode(false);
   if (!session) {
     renderLogin();
     return;
@@ -18,6 +23,7 @@ function render() {
 }
 
 function renderLogin(errorMessage = "") {
+  setRemoteWebMode(false);
   app.innerHTML = `
     <form class="form" id="login-form">
       <div>
@@ -57,6 +63,7 @@ function renderLogin(errorMessage = "") {
 }
 
 async function renderDevices() {
+  setRemoteWebMode(false);
   app.innerHTML = `
     <div class="loading"><span class="spinner"></span><span>读取 DSH 设备…</span></div>
   `;
@@ -137,10 +144,12 @@ async function startBootstrap(deviceId) {
               : "正在读取远程 DSH Web…";
       },
     });
+    setRemoteWebMode(true);
     window.dispatchEvent(new CustomEvent("dsh-bootstrap-ready", { detail: { deviceId, runtime: activeRuntime } }));
   } catch (error) {
     await activeRuntime?.dispose().catch(() => undefined);
     activeRuntime = null;
+    setRemoteWebMode(false);
     buttons.forEach((button) => setBusy(button, false));
     status.className = "status error";
     status.textContent = error instanceof Error ? error.message : "申请 ticket 失败";
