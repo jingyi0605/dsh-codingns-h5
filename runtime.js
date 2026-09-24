@@ -97,6 +97,51 @@
 		if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`${name} 大小限制无效`);
 	}
 	//#endregion
+	//#region src/transport/debug.ts
+	const DEBUG_ENV = "DSH_CODINGNS_TUNNEL_DEBUG";
+	/** 创建一个可注入测试 sink 的调试 logger。默认开关由当前运行环境决定。 */
+	function createDshTransportDebugLogger(options = {}) {
+		const enabled = options.enabled ?? resolveDshTransportDebugEnabled();
+		const side = options.side ?? "unknown";
+		const component = options.component ?? "transport";
+		const sink = options.sink ?? ((record) => {
+			console.info("[dsh-codingns:tunnel]", record);
+		});
+		return {
+			enabled,
+			log(event, fields = {}) {
+				if (!enabled) return;
+				sink({
+					at: (/* @__PURE__ */ new Date()).toISOString(),
+					side,
+					component,
+					event,
+					...fields
+				});
+			}
+		};
+	}
+	/** 解析 Host 环境变量、H5 URL/localStorage 和调试全局变量。 */
+	function resolveDshTransportDebugEnabled() {
+		const globalValue = globalThis.__DSH_CODINGNS_TUNNEL_DEBUG__;
+		if (globalValue !== void 0) return parseDebugValue(globalValue);
+		if (typeof location !== "undefined") {
+			const queryValue = new URL(location.href).searchParams.get("dshDebug");
+			if (queryValue !== null) return parseDebugValue(queryValue);
+		}
+		if (typeof localStorage !== "undefined") try {
+			const stored = localStorage.getItem("dsh-codingns-tunnel-debug");
+			if (stored !== null) return parseDebugValue(stored);
+		} catch {}
+		if (typeof process !== "undefined") return parseDebugValue(process.env[DEBUG_ENV]);
+		return false;
+	}
+	function parseDebugValue(value) {
+		if (typeof value === "boolean") return value;
+		if (typeof value !== "string") return false;
+		return /^(1|true|yes|on)$/iu.test(value.trim());
+	}
+	//#endregion
 	//#region src/transport/multiplexer.ts
 	const DEFAULT_SCOPE = {
 		hostId: "unknown",
@@ -117,6 +162,7 @@
 		hostScope;
 		session;
 		requireSessionReady;
+		debug;
 		constructor(carrier, options = {}) {
 			this.carrier = carrier;
 			this.idPrefix = options.idPrefix ?? "g0";
@@ -125,6 +171,7 @@
 			this.hostScope = options.hostScope ?? DEFAULT_SCOPE;
 			this.session = options.session;
 			this.requireSessionReady = options.requireSessionReady ?? options.session !== void 0;
+			this.debug = options.debug ?? createDshTransportDebugLogger({ component: "multiplexer" });
 			this.unsubscribe = carrier.subscribe((data) => this.receive(data));
 		}
 		request(channel, payload, signal) {
@@ -160,6 +207,14 @@
 					accepted: false
 				});
 				try {
+					this.debug.log("request.send", {
+						channel,
+						operation,
+						streamId: id,
+						generation: this.generation,
+						hostId: this.hostScope.hostId,
+						bodyBytes: encodeJson(payload).byteLength
+					});
 					this.send({
 						streamId: id,
 						channel: mapChannel(channel),
@@ -310,10 +365,23 @@
 				if (typeof data === "string") envelope = legacyEnvelope(JSON.parse(data));
 				else envelope = decodeDshEnvelope(data, this.flowControl?.maxFrameBytes === void 0 ? {} : { maxBytes: this.flowControl.maxFrameBytes });
 			} catch (error) {
+				this.debug.log("envelope.decode.error", {
+					bytes: typeof data === "string" ? data.length : data.byteLength,
+					error: error instanceof Error ? error.message : String(error)
+				});
 				this.close(error instanceof Error ? error : new Error(String(error)));
 				return;
 			}
-			if (envelope.generation !== this.generation || envelope.hostScope.hostId !== this.hostScope.hostId || envelope.hostScope.kind !== this.hostScope.kind) return;
+			this.debug.log("envelope.receive", envelopeDebugFields$1(envelope, typeof data === "string" ? new TextEncoder().encode(data).byteLength : data.byteLength));
+			if (envelope.generation !== this.generation || envelope.hostScope.hostId !== this.hostScope.hostId || envelope.hostScope.kind !== this.hostScope.kind) {
+				this.debug.log("envelope.scope.drop", {
+					expectedGeneration: this.generation,
+					expectedHostId: this.hostScope.hostId,
+					expectedHostKind: this.hostScope.kind,
+					...envelopeDebugFields$1(envelope, void 0)
+				});
+				return;
+			}
 			this.flowControl?.onReceive?.(typeof data === "string" ? new TextEncoder().encode(data).byteLength : data.byteLength, envelope);
 			const state = this.streams.get(envelope.streamId);
 			const pending = this.pending.get(envelope.streamId);
@@ -386,6 +454,7 @@
 			const encoded = encodeDshEnvelope(envelope, this.flowControl?.maxFrameBytes === void 0 ? {} : { maxBytes: this.flowControl.maxFrameBytes });
 			if (this.flowControl?.canSend && !this.flowControl.canSend(encoded.byteLength, envelope)) throw new Error("Transport 背压窗口不足");
 			const pending = this.carrier.send(encoded);
+			this.debug.log("envelope.send", envelopeDebugFields$1(envelope, encoded.byteLength));
 			if (pending && typeof pending.catch === "function") pending.catch((error) => this.close(error instanceof Error ? error : new Error(String(error))));
 			this.flowControl?.onSend?.(encoded.byteLength, envelope);
 		}
@@ -408,6 +477,20 @@
 			if (this.requireSessionReady && !this.session?.ready) throw new Error("SESSION_NOT_READY");
 		}
 	};
+	function envelopeDebugFields$1(envelope, bytes) {
+		return {
+			type: envelope.type,
+			channel: envelope.channel,
+			streamId: envelope.streamId,
+			sequence: envelope.sequence,
+			generation: envelope.generation,
+			hostId: envelope.hostScope.hostId,
+			hostKind: envelope.hostScope.kind,
+			operation: typeof envelope.meta.operation === "string" ? envelope.meta.operation : void 0,
+			bodyBytes: envelope.body?.byteLength ?? 0,
+			...bytes === void 0 ? {} : { frameBytes: bytes }
+		};
+	}
 	function mapChannel(channel) {
 		return channel === "fetch" || channel === "web" ? "web" : channel === "control" ? "session" : "rpc";
 	}
@@ -461,7 +544,8 @@
 				...options.hostScope ? { hostScope: options.hostScope } : {},
 				...options.session ? { session: options.session } : {},
 				...options.requireSessionReady === void 0 ? {} : { requireSessionReady: options.requireSessionReady },
-				...options.flowControl ? { flowControl: options.flowControl } : {}
+				...options.flowControl ? { flowControl: options.flowControl } : {},
+				...options.debug ? { debug: options.debug } : {}
 			});
 		}
 		rpc(request) {
@@ -564,8 +648,10 @@
 		readyValue;
 		readyResolve;
 		readyReject;
+		debug;
 		constructor(options) {
 			this.options = options;
+			this.debug = options.debug ?? createDshTransportDebugLogger({ component: `session-${options.role}` });
 			this.unsubscribe = options.carrier.subscribe((data) => this.receive(data));
 			if (options.onEnvelope) this.listeners.add(options.onEnvelope);
 		}
@@ -581,6 +667,12 @@
 		start() {
 			if (this.stateValue !== "idle") return;
 			this.stateValue = "handshaking";
+			this.debug.log("session.start", {
+				role: this.options.role,
+				generation: this.options.generation,
+				hostId: this.options.hostScope.hostId,
+				hostKind: this.options.hostScope.kind
+			});
 			this.readyValue = new Promise((resolve, reject) => {
 				this.readyResolve = resolve;
 				this.readyReject = reject;
@@ -605,11 +697,13 @@
 		send(envelope) {
 			if (this.stateValue === "closed") throw new Error("DSH Session 已关闭");
 			const pending = this.options.carrier.send(encodeDshEnvelope(envelope));
+			this.debug.log("session.send", envelopeDebugFields(envelope));
 			if (pending && typeof pending.catch === "function") pending.catch((error) => this.fail(error instanceof Error ? error : new Error(String(error))));
 		}
 		close(reason = "DSH Session 已关闭") {
 			if (this.stateValue === "closed") return;
 			this.stateValue = "closed";
+			this.debug.log("session.close", { reason });
 			this.unsubscribe();
 			if (this.heartbeat) clearInterval(this.heartbeat);
 			this.heartbeat = void 0;
@@ -640,9 +734,17 @@
 				envelope = decodeDshEnvelope(data);
 				this.validateScope(envelope);
 			} catch (error) {
+				this.debug.log("session.receive.invalid", {
+					bytes: data.byteLength,
+					error: error instanceof Error ? error.message : String(error)
+				});
 				this.fail(error instanceof Error ? error : new Error(String(error)));
 				return;
 			}
+			this.debug.log("session.receive", {
+				bytes: data.byteLength,
+				...envelopeDebugFields(envelope)
+			});
 			if (envelope.channel === "session") {
 				this.receiveSession(envelope);
 				return;
@@ -669,6 +771,10 @@
 				const allowed = new Set(this.options.capabilities ?? offered);
 				this.remoteCapabilities = offered.filter((capability) => allowed.has(capability));
 				this.stateValue = "ready";
+				this.debug.log("session.ready", {
+					role: this.options.role,
+					capabilities: this.remoteCapabilities
+				});
 				this.sendReady(this.remoteCapabilities);
 				this.readyResolve?.();
 				this.options.onReady?.(this);
@@ -687,6 +793,10 @@
 				}
 				this.remoteCapabilities = readCapabilities(envelope.meta.capabilities);
 				this.stateValue = "ready";
+				this.debug.log("session.ready", {
+					role: this.options.role,
+					capabilities: this.remoteCapabilities
+				});
 				this.readyResolve?.();
 				this.options.onReady?.(this);
 				return;
@@ -732,10 +842,24 @@
 		}
 		fail(error) {
 			this.stateValue = "degraded";
+			this.debug.log("session.error", { error: error.message });
 			this.readyReject?.(error);
 			this.options.onError?.(error);
 		}
 	};
+	function envelopeDebugFields(envelope) {
+		return {
+			type: envelope.type,
+			channel: envelope.channel,
+			streamId: envelope.streamId,
+			sequence: envelope.sequence,
+			generation: envelope.generation,
+			hostId: envelope.hostScope.hostId,
+			hostKind: envelope.hostScope.kind,
+			operation: typeof envelope.meta.operation === "string" ? envelope.meta.operation : void 0,
+			bodyBytes: envelope.body?.byteLength ?? 0
+		};
+	}
 	function readCapabilities(value) {
 		if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) throw new Error("MESSAGE_INVALID");
 		return [...new Set(value)];
@@ -846,6 +970,7 @@
 	const TUNNEL_DATA_CHANNEL_LABEL = "codingns-tunnel";
 	/** 将浏览器或 Node WebRTC DataChannel 包装为带背压的二进制 Carrier。 */
 	function createDataChannelCarrier(channel, options = {}) {
+		const logger = options.debug ?? createDshTransportDebugLogger({ component: "data-channel" });
 		let state = channel.readyState === "open" ? "open" : "connecting";
 		const listeners = /* @__PURE__ */ new Set();
 		const high = options.highWaterMark ?? 1048576;
@@ -854,15 +979,18 @@
 		let chain = Promise.resolve();
 		const onOpen = () => {
 			state = "open";
+			logger.log("data-channel.open", { label: channel.label ?? null });
 		};
 		const onClose = () => {
 			state = "closed";
+			logger.log("data-channel.close", { label: channel.label ?? null });
 			listeners.clear();
 		};
 		const onMessage = (event) => {
 			const value = event.data;
 			const bytes = toBytes$1(value);
 			if (!bytes) return;
+			logger.log("carrier.receive", { bytes: bytes.byteLength });
 			for (const listener of [...listeners]) listener(bytes);
 		};
 		channel.addEventListener("open", onOpen);
@@ -891,6 +1019,11 @@
 		});
 		const waitBackpressure = () => {
 			if ((channel.bufferedAmount ?? 0) <= high) return Promise.resolve();
+			logger.log("carrier.backpressure.wait", {
+				bufferedAmount: channel.bufferedAmount ?? 0,
+				highWaterMark: high,
+				lowWaterMark: low
+			});
 			return new Promise((resolve, reject) => {
 				const timer = setTimeout(() => {
 					cleanup();
@@ -928,6 +1061,10 @@
 					if (state !== "open") throw new Error("CodingNS DataChannel 尚未 ready");
 					await waitBackpressure();
 					channel.send(data);
+					logger.log("carrier.send", {
+						bytes: data.byteLength,
+						bufferedAmount: channel.bufferedAmount ?? 0
+					});
 				});
 				return chain;
 			},
@@ -957,7 +1094,12 @@
 	/** 客户端发起 offer，校验 Host fingerprint 后返回 DataChannel Carrier。 */
 	async function connectWebRtcClient(options) {
 		const ticket = options.signalingTicket;
+		const debug = options.debug ?? createDshTransportDebugLogger({
+			side: "h5",
+			component: "webrtc-client"
+		});
 		const signalingUrl = createSignalingUrl(ticket.signalingBaseUrl, ticket.ticket);
+		debug.log("signaling.connect", { signalingBaseUrl: ticket.signalingBaseUrl });
 		const signaling = await options.signalingSocketFactory(signalingUrl);
 		const cleanupListeners = [];
 		if ("readyState" in signaling) {
@@ -980,7 +1122,7 @@
 			iceTransportPolicy: ticket.iceTransportPolicy
 		});
 		const channel = peerConnection.createDataChannel(TUNNEL_DATA_CHANNEL_LABEL);
-		const carrier = createDataChannelCarrier(channel);
+		const carrier = createDataChannelCarrier(channel, { ...options.debug ? { debug: options.debug } : {} });
 		let closed = false;
 		const close = async () => {
 			if (closed) return;
@@ -1006,6 +1148,7 @@
 				type: "offer",
 				sdp: offer.sdp ?? ""
 			}));
+			debug.log("signaling.offer.sent", { sdpBytes: offer.sdp?.length ?? 0 });
 			const answer = await answerPromise;
 			assertDtlsFingerprint(ticket.hostDtlsFingerprint, answer.sdp);
 			await peerConnection.setRemoteDescription({
@@ -1019,6 +1162,7 @@
 				clientContext: null,
 				protocolVersion: "1"
 			}));
+			debug.log("webrtc.connected", { channelLabel: TUNNEL_DATA_CHANNEL_LABEL });
 			return {
 				carrier,
 				peerConnection,
@@ -1542,6 +1686,10 @@
 	/** 独立 H5 页面使用的入口；Control API 会话通过 HttpOnly Cookie 提供。 */
 	async function startDshH5BrowserBootstrap(options) {
 		const signal = options.signal;
+		const debug = createDshTransportDebugLogger({
+			side: "h5",
+			component: "h5-bootstrap"
+		});
 		options.onStatus?.("ticket");
 		const device = chooseDshDevice(await options.controlApi.listDevices(signal), options.dshDeviceId);
 		const ticket = await options.controlApi.createClientTicket(device.dshDeviceId, signal);
@@ -1552,7 +1700,8 @@
 			peerConnectionFactory: ({ iceServers, iceTransportPolicy }) => createPeerConnection({
 				iceServers,
 				iceTransportPolicy
-			})
+			}),
+			debug
 		});
 		const generation = options.generation ?? 1;
 		const hostScope = resolveDshHostScope(ticket);
@@ -1560,7 +1709,8 @@
 			carrier: connection.carrier,
 			role: "client",
 			generation: String(generation),
-			hostScope
+			hostScope,
+			debug
 		});
 		const transport = new DshCodingNsTransport({
 			carrier: connection.carrier,
@@ -1570,7 +1720,8 @@
 			},
 			hostScope,
 			session,
-			requireSessionReady: true
+			requireSessionReady: true,
+			debug
 		});
 		let webContext;
 		try {

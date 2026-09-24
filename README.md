@@ -31,3 +31,13 @@
 本目录带有 `wrangler.toml`，可以在目录内执行 `wrangler deploy`。这使用 Workers Static Assets 提供静态文件；Worker 仍不执行 WebRTC，也不接触 DSH 业务明文。
 
 Cloudflare Worker 可以作为反向代理或注入运行时配置，但不应把它当作 WebRTC 服务器；Host/Relay 仍运行在控制站和用户设备上。
+
+## Tunnel 调试日志
+
+调试日志默认关闭。H5 临时启用方式：
+
+- 在地址后增加 `?dshDebug=1`，例如 `https://dsh.codingns.com/?dshDebug=1`；
+- 或在浏览器控制台执行 `localStorage.setItem('dsh-codingns-tunnel-debug', '1')`，刷新页面；
+- 停用时执行 `localStorage.removeItem('dsh-codingns-tunnel-debug')`，或使用 `?dshDebug=0`。
+
+日志只输出信令、DataChannel、Session、Envelope 和 Remote Web 请求的元数据，不输出 Envelope body、ticket、Cookie 或 DSH Web 响应正文。
