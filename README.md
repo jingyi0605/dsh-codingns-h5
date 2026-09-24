@@ -20,6 +20,8 @@
 
 将本目录作为项目根目录，Framework 选择 `Other`，Build Command 留空，Output Directory 设为 `.`。如果 Control API 与 `dsh.codingns.com` 同源反代，保持 `config.js` 的空地址即可；如果跨域部署，修改 `config.js` 的 `controlApiBaseUrl`，并在 Control API 的 `CODINGNS_PROXY_CONTROL_CORS_ALLOWED_ORIGINS` 中加入 Bootstrap 域名。
 
+部署响应头必须保留项目中的 CSP 配置：远程 DSH Web 在隔离 iframe 中通过加密 Tunnel 动态加载用户自己的前端模块，因此需要允许 `blob:` 脚本、样式、字体和 Worker；远程脚本本身仍不允许通过 `unsafe-inline` 执行。不要把 `connect-src` 收窄到只允许控制站，否则 WebRTC 信令和 TURN 会被浏览器拦截。
+
 ### Cloudflare Pages
 
 将本目录作为 Pages 项目目录，Build command 留空，输出目录填 `.`。`_redirects` 和 `_headers` 已包含 SPA 回退与基础安全响应头。

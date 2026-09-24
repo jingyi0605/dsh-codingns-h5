@@ -1202,6 +1202,8 @@
 	var RemoteDshWebContext = class {
 		options;
 		objectUrls = /* @__PURE__ */ new Set();
+		moduleUrls = /* @__PURE__ */ new Map();
+		moduleLoads = /* @__PURE__ */ new Map();
 		sockets = /* @__PURE__ */ new Map();
 		iframeValue;
 		sessionIdValue;
@@ -1261,26 +1263,77 @@
 			base.href = "https://dsh.remote.invalid/";
 			documentValue.head.prepend(base);
 			const scriptNodes = [...documentValue.querySelectorAll("script[src]")];
+			const inlineScriptNodes = [...documentValue.querySelectorAll("script:not([src])")];
 			const styleNodes = [...documentValue.querySelectorAll("link[rel=\"stylesheet\"][href]")];
-			await Promise.all([...scriptNodes.map(async (node) => {
-				const path = resolveRemotePath(node.getAttribute("src") ?? "");
-				const body = await this.options.transport.webRequest("web.asset.get", {
-					sessionId: this.sessionIdValue,
-					path
-				}, signal);
-				node.src = this.createObjectUrl(body, "text/javascript");
-			}), ...styleNodes.map(async (node) => {
-				const path = resolveRemotePath(node.getAttribute("href") ?? "");
-				const body = await this.options.transport.webRequest("web.asset.get", {
-					sessionId: this.sessionIdValue,
-					path
-				}, signal);
-				node.href = this.createObjectUrl(body, "text/css");
-			})]);
+			for (const node of [...documentValue.querySelectorAll("link")]) {
+				const rel = (node.getAttribute("rel") ?? "").toLowerCase();
+				if (rel === "modulepreload" || rel === "manifest" || rel === "icon") node.remove();
+			}
+			await Promise.all([
+				...scriptNodes.map(async (node) => {
+					const path = resolveRemotePath(node.getAttribute("src") ?? "");
+					node.src = await this.loadScript(path, signal);
+				}),
+				...inlineScriptNodes.map(async (node) => {
+					const type = (node.getAttribute("type") ?? "").toLowerCase();
+					if (type === "application/json" || type === "application/ld+json") return;
+					const source = node.textContent ?? "";
+					node.textContent = "";
+					node.src = this.createObjectUrl(new TextEncoder().encode(source), "text/javascript");
+				}),
+				...styleNodes.map(async (node) => {
+					const path = resolveRemotePath(node.getAttribute("href") ?? "");
+					node.href = await this.loadStyle(path, signal);
+				})
+			]);
 			const bridge = documentValue.createElement("script");
-			bridge.textContent = createBridgeScript();
+			bridge.src = this.createObjectUrl(new TextEncoder().encode(createBridgeScript()), "text/javascript");
 			documentValue.head.prepend(bridge);
 			return `<!doctype html>${documentValue.documentElement.outerHTML}`;
+		}
+		async loadScript(path, signal) {
+			const cached = this.moduleUrls.get(path);
+			if (cached !== void 0) return cached;
+			const pending = this.moduleLoads.get(path);
+			if (pending !== void 0) return pending;
+			const load = (async () => {
+				let source = decodeText(await this.options.transport.webRequest("web.asset.get", {
+					sessionId: this.sessionIdValue,
+					path
+				}, signal));
+				const references = collectRelativeReferences(source, /\.(?:js)(?:\?[^\s"'`)]*)?$/u);
+				const replacements = await Promise.all(references.map(async (reference) => {
+					const dependencyPath = resolveRelativeAssetPath(path, reference);
+					return [reference, await this.loadScript(dependencyPath, signal)];
+				}));
+				for (const [reference, url] of replacements) source = source.split(reference).join(url);
+				const url = this.createObjectUrl(new TextEncoder().encode(source), "text/javascript");
+				this.moduleUrls.set(path, url);
+				return url;
+			})();
+			this.moduleLoads.set(path, load);
+			return load;
+		}
+		async loadStyle(path, signal) {
+			const cached = this.moduleUrls.get(path);
+			if (cached !== void 0) return cached;
+			let source = decodeText(await this.options.transport.webRequest("web.asset.get", {
+				sessionId: this.sessionIdValue,
+				path
+			}, signal));
+			const references = collectCssReferences(source, /\.(?:woff2?|ttf|otf|png|svg)(?:\?[^\s"'`)]*)?$/u);
+			const replacements = await Promise.all(references.map(async (reference) => {
+				const dependencyPath = resolveRelativeAssetPath(path, reference);
+				const dependency = await this.options.transport.webRequest("web.asset.get", {
+					sessionId: this.sessionIdValue,
+					path: dependencyPath
+				}, signal);
+				return [reference, this.createObjectUrl(dependency, contentTypeForPath(dependencyPath))];
+			}));
+			for (const [reference, url] of replacements) source = source.split(reference).join(url);
+			const url = this.createObjectUrl(new TextEncoder().encode(source), "text/css");
+			this.moduleUrls.set(path, url);
+			return url;
 		}
 		createObjectUrl(value, contentType) {
 			if (!(value instanceof Uint8Array)) throw new Error("Remote DSH Web 资源必须是二进制");
@@ -1450,6 +1503,39 @@
 		if (value instanceof ArrayBuffer) return new Uint8Array(value);
 		if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
 		throw new TypeError("远程 WebSocket 消息必须是二进制或字符串");
+	}
+	function decodeText(value) {
+		if (!(value instanceof Uint8Array)) throw new TypeError("远程 DSH Web 资源必须是二进制");
+		return new TextDecoder().decode(value);
+	}
+	function collectRelativeReferences(source, suffix) {
+		const found = /* @__PURE__ */ new Set();
+		for (const match of source.matchAll(/["'`]((?:\.\.?\/)[^"'`]+)["'`]/gu)) {
+			const reference = match[1];
+			if (reference !== void 0 && suffix.test(reference)) found.add(reference);
+		}
+		return [...found];
+	}
+	function collectCssReferences(source, suffix) {
+		const found = /* @__PURE__ */ new Set();
+		for (const match of source.matchAll(/url\(\s*(?:"([^"]+)"|'([^']+)'|([^)'\s]+))\s*\)/gu)) {
+			const reference = match[1] ?? match[2] ?? match[3];
+			if (reference?.startsWith("./") === true || reference?.startsWith("../") === true) {
+				if (suffix.test(reference)) found.add(reference);
+			}
+		}
+		return [...found];
+	}
+	function resolveRelativeAssetPath(sourcePath, reference) {
+		const resolved = new URL(reference, `https://dsh.remote.invalid${sourcePath}`);
+		return resolveRemotePath(resolved.pathname + resolved.search);
+	}
+	function contentTypeForPath(path) {
+		if (/\.woff2?(?:$|\?)/u.test(path)) return "font/woff";
+		if (/\.ttf(?:$|\?)/u.test(path)) return "font/ttf";
+		if (/\.svg(?:$|\?)/u.test(path)) return "image/svg+xml";
+		if (/\.png(?:$|\?)/u.test(path)) return "image/png";
+		return "application/octet-stream";
 	}
 	//#endregion
 	//#region src/client/dsh-h5-bootstrap.ts
