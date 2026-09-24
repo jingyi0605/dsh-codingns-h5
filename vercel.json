@@ -4,5 +4,11 @@
   "headers": [{
     "source": "/(.*)",
     "headers": [{ "key": "Content-Security-Policy", "value": "default-src 'self'; connect-src 'self' https: wss:; style-src 'self' 'unsafe-inline' blob:; script-src 'self' blob: https://static.cloudflareinsights.com; img-src 'self' data: blob:; font-src 'self' data: blob:; worker-src 'self' blob:; frame-src 'self' blob:; frame-ancestors 'none'" }]
+  }, {
+    "source": "/runtime.js",
+    "headers": [{ "key": "Cache-Control", "value": "no-cache, must-revalidate" }]
+  }, {
+    "source": "/app.js",
+    "headers": [{ "key": "Cache-Control", "value": "no-cache, must-revalidate" }]
   }]
 }
