@@ -2010,10 +2010,14 @@
       parent.postMessage({ kind: 'dsh-web-debug', event, fields: payload }, '*');
     };
     const pending = new Map();
-    let nextId = 0;
+    // RPC、WebSocket 和远程 stream 必须使用各自的 ID 空间；资源 fetch
+    // 不能改变 WebSocket 的 ID，否则 ws.open 与 ws.send 会指向不同 key。
+    let nextCallId = 0;
+    let nextSocketId = 0;
+    let nextStreamId = 0;
     let remoteLoadChain = Promise.resolve();
-    const call = (kind, input, body) => new Promise((resolve, reject) => {
-      const id = String(++nextId);
+    const call = (kind, input, body, explicitId) => new Promise((resolve, reject) => {
+      const id = explicitId || String(++nextCallId);
       pending.set(id, { resolve, reject });
       bridgeLog('bridge.call', { kind, id, path: input && typeof input.path === 'string' ? input.path : undefined });
       parent.postMessage({ kind, id, input, body }, '*');
@@ -2345,9 +2349,9 @@
         this.url = String(url);
         this.readyState = RemoteWebSocket.CONNECTING;
         this._listeners = new Map();
-        window.__dshRemoteSockets.set(this._id = String(++nextId), this);
+        window.__dshRemoteSockets.set(this._id = String(++nextSocketId), this);
         bridgeLog('bridge.ws.open', { id: this._id, path: new URL(this.url, resourceBase()).pathname });
-        call('ws.open', { path: new URL(this.url, resourceBase()).pathname }).then(() => {
+        call('ws.open', { path: new URL(this.url, resourceBase()).pathname }, undefined, this._id).then(() => {
           if (this.readyState !== RemoteWebSocket.CONNECTING) return;
           this.readyState = RemoteWebSocket.OPEN;
           bridgeLog('bridge.ws.open.response', { id: this._id });
@@ -2392,7 +2396,7 @@
     };
     window.WebSocket = RemoteWebSocket;
     const openRemoteStream = (endpoint, payload, signal) => {
-      const streamId = 'remote_' + String(++nextId) + '_' + Math.random().toString(36).slice(2);
+      const streamId = 'remote_' + String(++nextStreamId) + '_' + Math.random().toString(36).slice(2);
       return (async function*() {
         const socket = new RemoteWebSocket(new URL('/api/remote.mux', resourceBase()).href);
         const frames = [];
