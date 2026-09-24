@@ -1850,7 +1850,21 @@
 						bytes: body.byteLength,
 						encoding: typeof message.body === "string" ? "text" : "binary"
 					});
-					this.options.transport.sendWebStream(streamId, "web.ws.data", body, { ...typeof message.body === "string" ? { encoding: "text" } : { binary: true } });
+					try {
+						this.options.transport.sendWebStream(streamId, "web.ws.data", body, { ...typeof message.body === "string" ? { encoding: "text" } : { binary: true } });
+						this.debug.log("bridge.ws.data.sent", {
+							id: message.id,
+							streamId,
+							bytes: body.byteLength
+						});
+					} catch (error) {
+						this.debug.log("bridge.ws.data.error", {
+							id: message.id,
+							streamId,
+							error: error instanceof Error ? error.message : String(error)
+						});
+						throw error;
+					}
 					return;
 				}
 				if (message.kind === "ws.close") {
