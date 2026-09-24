@@ -1985,7 +1985,15 @@
     });
     const originalFetch = window.fetch.bind(window);
     window.fetch = async (input, init) => {
-      const url = typeof input === 'string' ? input : input.url;
+      // DSH client-connection 使用 URL 对象调用 fetch；Request 则提供 url。
+      // 两者都必须保留原始路径，否则会把请求错误地转成 /undefined。
+      const url = typeof input === 'string'
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input && typeof input.url === 'string'
+            ? input.url
+            : String(input);
       const parsed = new URL(url, resourceBase());
       if (parsed.origin === location.origin || parsed.origin === 'null' || parsed.origin === 'https://dsh.remote.invalid') {
         const request = typeof input === 'string' ? undefined : input;
