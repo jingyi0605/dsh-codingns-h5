@@ -1761,6 +1761,16 @@
 			if (!isRecord(event.data) || typeof event.data.kind !== "string" || typeof event.data.id !== "string") return;
 			const message = event.data;
 			try {
+				if (message.kind === "dsh-web-debug") {
+					const eventName = typeof message.event === "string" ? message.event : "unknown";
+					const fields = isRecord(message.fields) ? message.fields : {};
+					this.debug.log(`iframe.${eventName}`, fields);
+					if (/^(bridge\.ws\.|client\.connection\.)/u.test(eventName)) await this.options.transport.webRequest("web.debug", {
+						event: eventName,
+						fields
+					});
+					return;
+				}
 				if (message.kind === "fetch") {
 					const input = isRecord(message.input) ? message.input : {};
 					const path = resolveRemotePath(typeof input.path === "string" ? input.path : "/");
@@ -1963,7 +1973,9 @@
     })();
     const bridgeLog = (event, fields = {}) => {
       if (!bridgeDebugEnabled) return;
-      console.info('[dsh-codingns:tunnel]', { at: new Date().toISOString(), side: 'h5', component: 'remote-web-bridge', event, ...fields });
+      const payload = { at: new Date().toISOString(), side: 'h5', component: 'remote-web-bridge', event, ...fields };
+      console.info('[dsh-codingns:tunnel]', payload);
+      parent.postMessage({ kind: 'dsh-web-debug', event, fields: payload }, '*');
     };
     const pending = new Map();
     let nextId = 0;
@@ -2406,6 +2418,9 @@
       onGenerationChange: parentTransport?.onGenerationChange?.bind(parentTransport),
       reconnect: parentTransport?.reconnect?.bind(parentTransport),
       close: parentTransport?.close?.bind(parentTransport),
+    };
+    globalThis.__DSH_CODINGNS_DEBUG__ = (event, fields = {}) => {
+      bridgeLog('client.' + String(event), fields);
     };
     const NativeEventSource = globalThis.EventSource;
     class RemoteEventSource {
