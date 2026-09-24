@@ -1988,7 +1988,15 @@
       const url = typeof input === 'string' ? input : input.url;
       const parsed = new URL(url, resourceBase());
       if (parsed.origin === location.origin || parsed.origin === 'null' || parsed.origin === 'https://dsh.remote.invalid') {
-        const response = await call('fetch', { path: parsed.pathname + parsed.search, method: init && init.method, headers: init && [...new Headers(init.headers).entries()] }, typeof init?.body === 'string' ? init.body : undefined);
+        const request = typeof input === 'string' ? undefined : input;
+        const method = init?.method ?? request?.method;
+        const headers = init?.headers ?? request?.headers;
+        let body = typeof init?.body === 'string' ? init.body : undefined;
+        if (body === undefined && init?.body instanceof URLSearchParams) body = init.body.toString();
+        if (body === undefined && init === undefined && request && request.method !== 'GET' && request.method !== 'HEAD') {
+          body = await request.clone().text();
+        }
+        const response = await call('fetch', { path: parsed.pathname + parsed.search, method, headers: headers ? [...new Headers(headers).entries()] : undefined }, body);
         return new Response(response.body, { status: response.status, headers: response.headers });
       }
       return originalFetch(input, init);
