@@ -1764,6 +1764,11 @@
 	};
 	function createBridgeScript() {
 		return `(() => {
+    // 远程 DSH Web 已经运行在外层 DSH-CodingNS Tunnel 内。
+    // 内嵌的 dsh-codingns Client 仍需加载其插件代码和界面，但不能再次启动
+    // 自己的 Relay/WebRTC，否则会把信令 WebSocket 当成本地 DSH Web 路径转发，
+    // 形成递归连接并持续触发 /signaling/signal 失败。
+    globalThis.__DSH_CODINGNS_REMOTE_WEB_CONTEXT__ = true;
     const pending = new Map();
     let nextId = 0;
     let remoteLoadChain = Promise.resolve();
