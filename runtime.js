@@ -2051,6 +2051,59 @@
       addEventListener(type, listener) { this['on' + type] = listener; }
       removeEventListener(type, listener) { if (this['on' + type] === listener) this['on' + type] = null; }
     };
+    const openRemoteStream = (endpoint, payload, signal) => {
+      const streamId = 'remote_' + String(++nextId) + '_' + Math.random().toString(36).slice(2);
+      return (async function*() {
+        const socket = new RemoteWebSocket(new URL('/api/remote.mux', resourceBase()).href);
+        const frames = [];
+        let wake;
+        let ended = false;
+        let failure;
+        const notify = () => { const resolve = wake; wake = undefined; resolve?.(); };
+        const onMessage = (event) => {
+          try {
+            const frame = JSON.parse(String(event.data));
+            if (!frame || frame.streamId !== streamId) return;
+            if (frame.type === 'end') ended = true;
+            else if (frame.type === 'error') failure = new Error(frame.error?.message || '远程 DSH Stream 失败');
+            else if (frame.type === 'item') frames.push(frame.value);
+            notify();
+          } catch (error) {
+            failure = error instanceof Error ? error : new Error(String(error));
+            notify();
+          }
+        };
+        const onError = () => { failure = new Error('远程 DSH Stream WebSocket 失败'); notify(); };
+        const onAbort = () => { failure = signal.reason instanceof Error ? signal.reason : new Error('远程 DSH Stream 已取消'); notify(); };
+        socket.addEventListener('message', onMessage);
+        signal?.addEventListener('abort', onAbort, { once: true });
+        try {
+          await new Promise((resolve, reject) => {
+            const opened = () => resolve(undefined);
+            const failed = () => reject(new Error('远程 DSH Stream WebSocket 打开失败'));
+            socket.addEventListener('open', opened, { once: true });
+            socket.addEventListener('error', failed, { once: true });
+            });
+          socket.addEventListener('error', onError);
+          signal?.throwIfAborted();
+          socket.send(JSON.stringify({ type: 'open', streamId, endpoint, payload }));
+          while (!ended) {
+            if (failure) throw failure;
+            if (frames.length === 0) await new Promise((resolve) => { wake = resolve; });
+            while (frames.length > 0) yield frames.shift();
+          }
+          if (failure) throw failure;
+        } finally {
+          signal?.removeEventListener('abort', onAbort);
+          socket.close(1000, 'stream closed');
+        }
+      })();
+    };
+    globalThis.__DSH_TRANSPORT__ = {
+      fetch: window.fetch.bind(window),
+      openStream: openRemoteStream,
+      ownsHost: false,
+    };
     const NativeEventSource = globalThis.EventSource;
     class RemoteEventSource {
       static CONNECTING = 0;
