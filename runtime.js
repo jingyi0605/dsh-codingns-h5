@@ -1771,6 +1771,10 @@
 			const message = event.data;
 			if (message.kind !== "dsh-web-debug" && typeof message.id !== "string") return;
 			if (typeof message.id === "string") this.messageWindows.set(message.id, sourceWindow);
+			if (message.kind !== "dsh-web-debug") this.debug.log("bridge.message.accepted", {
+				kind: message.kind,
+				id: message.id
+			});
 			try {
 				if (message.kind === "dsh-web-debug") {
 					const eventName = typeof message.event === "string" ? message.event : "unknown";
@@ -1864,6 +1868,11 @@
 				}
 				if (message.kind === "ws.send") {
 					const streamId = this.sockets.get(message.id);
+					this.debug.log("bridge.ws.receive", {
+						id: message.id,
+						hasSocket: streamId !== void 0,
+						streamId
+					});
 					if (!streamId) throw new Error("Remote DSH WebSocket 不存在");
 					const body = typeof message.body === "string" ? new TextEncoder().encode(message.body) : toBytes(message.body);
 					this.debug.log("bridge.ws.send", {
