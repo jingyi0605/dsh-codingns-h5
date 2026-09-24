@@ -1600,6 +1600,10 @@
 		moduleUrls = /* @__PURE__ */ new Map();
 		moduleLoads = /* @__PURE__ */ new Map();
 		sockets = /* @__PURE__ */ new Map();
+		/** 请求可能来自不同生命周期的 iframe；响应必须回到原发送窗口。 */
+		messageWindows = /* @__PURE__ */ new Map();
+		socketWindows = /* @__PURE__ */ new Map();
+		iframeWindows = /* @__PURE__ */ new Set();
 		/** WebSocket 只有在 Host 本地 socket 真正打开后才允许 iframe 发送首帧。 */
 		socketReady = /* @__PURE__ */ new Map();
 		iframeValue;
@@ -1644,6 +1648,7 @@
 			iframe.srcdoc = await this.prepareBootHtml(boot, signal);
 			this.options.container.replaceChildren(iframe);
 			this.iframeValue = iframe;
+			if (iframe.contentWindow !== null) this.iframeWindows.add(iframe.contentWindow);
 		}
 		async dispose() {
 			if (this.disposed) return;
@@ -1651,6 +1656,9 @@
 			window.removeEventListener("message", this.onMessageBound);
 			for (const streamId of this.sockets.values()) this.options.transport.closeWebStream(streamId);
 			this.sockets.clear();
+			this.messageWindows.clear();
+			this.socketWindows.clear();
+			this.iframeWindows.clear();
 			for (const waiter of this.socketReady.values()) waiter.reject(/* @__PURE__ */ new Error("Remote DSH Web Context 已关闭"));
 			this.socketReady.clear();
 			if (this.sessionIdValue !== void 0) try {
@@ -1757,10 +1765,12 @@
 			return url;
 		}
 		async onMessage(event) {
-			if (this.disposed || !this.iframeValue || event.source !== this.iframeValue.contentWindow) return;
+			const sourceWindow = event.source;
+			if (this.disposed || sourceWindow === null || !this.iframeWindows.has(sourceWindow)) return;
 			if (!isRecord(event.data) || typeof event.data.kind !== "string") return;
 			const message = event.data;
 			if (message.kind !== "dsh-web-debug" && typeof message.id !== "string") return;
+			if (typeof message.id === "string") this.messageWindows.set(message.id, sourceWindow);
 			try {
 				if (message.kind === "dsh-web-debug") {
 					const eventName = typeof message.event === "string" ? message.event : "unknown";
@@ -1825,6 +1835,7 @@
 						path: resolveRemotePath(typeof input.path === "string" ? input.path : "/")
 					});
 					this.sockets.set(message.id, opened.streamId);
+					this.socketWindows.set(message.id, sourceWindow);
 					let resolveReady;
 					let rejectReady;
 					const ready = new Promise((resolve, reject) => {
@@ -1886,6 +1897,7 @@
 						streamId
 					});
 					this.sockets.delete(message.id);
+					this.socketWindows.delete(message.id);
 				}
 			} catch (error) {
 				this.postResponse(message.id, {
@@ -1938,17 +1950,18 @@
 					this.socketReady.delete(id);
 				}
 				if (this.sockets.get(id) === streamId) this.sockets.delete(id);
+				this.socketWindows.delete(id);
 			}
 		}
 		postResponse(id, value) {
-			this.iframeValue?.contentWindow?.postMessage({
+			this.messageWindows.get(id)?.postMessage({
 				kind: "dsh-web-response",
 				id,
 				...value
 			}, "*");
 		}
 		postEvent(id, type, body) {
-			this.iframeValue?.contentWindow?.postMessage({
+			this.socketWindows.get(id)?.postMessage({
 				kind: "dsh-web-event",
 				id,
 				type,
