@@ -1758,8 +1758,9 @@
 		}
 		async onMessage(event) {
 			if (this.disposed || !this.iframeValue || event.source !== this.iframeValue.contentWindow) return;
-			if (!isRecord(event.data) || typeof event.data.kind !== "string" || typeof event.data.id !== "string") return;
+			if (!isRecord(event.data) || typeof event.data.kind !== "string") return;
 			const message = event.data;
+			if (message.kind !== "dsh-web-debug" && typeof message.id !== "string") return;
 			try {
 				if (message.kind === "dsh-web-debug") {
 					const eventName = typeof message.event === "string" ? message.event : "unknown";
