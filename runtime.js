@@ -1802,6 +1802,7 @@
     };
     const nativeAppendChild = Node.prototype.appendChild;
     const nativeInsertBefore = Node.prototype.insertBefore;
+    const nativeRemoveChild = Node.prototype.removeChild;
     Node.prototype.appendChild = function(node) {
       if (isRemoteScript(node)) return queueRemoteNode(this, node, null, 'script', 'src');
       if (isRemoteStyle(node)) return queueRemoteNode(this, node, null, 'style', 'href');
@@ -1812,6 +1813,19 @@
       if (isRemoteStyle(node)) return queueRemoteNode(this, node, beforeNode, 'style', 'href');
       return nativeInsertBefore.call(this, node, beforeNode);
     };
+    const handleAddedNode = (node) => {
+      if (!node || node.nodeType !== 1) return;
+      if (isRemoteScript(node) || isRemoteStyle(node)) {
+        const parentNode = node.parentNode;
+        if (!parentNode) return;
+        nativeRemoveChild.call(parentNode, node);
+        queueRemoteNode(parentNode, node, null, isRemoteScript(node) ? 'script' : 'style', isRemoteScript(node) ? 'src' : 'href');
+      }
+      if (node.querySelectorAll) for (const child of node.querySelectorAll('script[src],link[rel="stylesheet"][href]')) handleAddedNode(child);
+    };
+    new MutationObserver((records) => {
+      for (const record of records) for (const node of record.addedNodes) handleAddedNode(node);
+    }).observe(document, { childList: true, subtree: true });
     addEventListener('message', (event) => {
       const value = event.data;
       if (!value || value.kind === undefined) return;
