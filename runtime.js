@@ -1559,6 +1559,7 @@
 		}
 		async prepareBootHtml(boot, signal) {
 			const documentValue = new DOMParser().parseFromString(boot.html, "text/html");
+			relaxRemoteContentSecurityPolicy(documentValue);
 			const base = documentValue.createElement("base");
 			base.href = "https://dsh.remote.invalid/";
 			documentValue.head.prepend(base);
@@ -1572,6 +1573,8 @@
 			}
 			await Promise.all([
 				...scriptNodes.map(async (node) => {
+					node.removeAttribute("integrity");
+					node.removeAttribute("crossorigin");
 					const path = resolveRemotePath(node.getAttribute("src") ?? "");
 					node.src = await this.loadScript(path, signal);
 				}),
@@ -1583,6 +1586,8 @@
 					node.src = this.createObjectUrl(new TextEncoder().encode(source), "text/javascript");
 				}),
 				...styleNodes.map(async (node) => {
+					node.removeAttribute("integrity");
+					node.removeAttribute("crossorigin");
 					const path = resolveRemotePath(node.getAttribute("href") ?? "");
 					node.href = await this.loadStyle(path, signal);
 				})
@@ -1827,6 +1832,8 @@
     const nativeFragmentPrepend = DocumentFragment.prototype.prepend;
     const nativeInsertAdjacentHTML = Element.prototype.insertAdjacentHTML;
     const nativeReplaceChildren = Element.prototype.replaceChildren;
+    const nativeDocumentWrite = Document.prototype.write;
+    const nativeDocumentWriteln = Document.prototype.writeln;
     const scriptSrcDescriptor = Object.getOwnPropertyDescriptor(HTMLScriptElement.prototype, 'src');
     const linkHrefDescriptor = Object.getOwnPropertyDescriptor(HTMLLinkElement.prototype, 'href');
     if (scriptSrcDescriptor?.set && scriptSrcDescriptor.get) {
@@ -1955,6 +1962,24 @@
         else nativeAppendChild.call(target, child);
       }
     };
+    const writeRemoteMarkup = (documentNode, html) => {
+      if (typeof html !== 'string' || !/(?:<script\b|<link\b)/iu.test(html)) return false;
+      const template = documentNode.createElement('template');
+      template.innerHTML = html;
+      const parent = documentNode.head || documentNode.documentElement;
+      for (const child of [...template.content.childNodes]) {
+        if (isRemoteScript(child)) queueRemoteNode(parent, child, null, 'script', 'src');
+        else if (isRemoteStyle(child)) queueRemoteNode(parent, child, null, 'style', 'href');
+        else nativeAppendChild.call(parent, child);
+      }
+      return true;
+    };
+    Document.prototype.write = function(html) {
+      if (!writeRemoteMarkup(this, html)) nativeDocumentWrite.call(this, html);
+    };
+    Document.prototype.writeln = function(html) {
+      if (!writeRemoteMarkup(this, html)) nativeDocumentWriteln.call(this, html);
+    };
     const handleAddedNode = (node) => {
       if (!node || node.nodeType !== 1) return;
       if (isRemoteScript(node) || isRemoteStyle(node)) {
@@ -2032,6 +2057,15 @@
 		const parsed = new URL(value, "https://dsh.remote.invalid");
 		if (parsed.origin !== "https://dsh.remote.invalid" || parsed.pathname.includes("..")) throw new Error("远程 DSH Web 路径无效");
 		return parsed.pathname + parsed.search;
+	}
+	/**
+	* DSH Web 原本的 CSP 面向真实站点；srcdoc 中的插件代码已经被搬到 Blob，
+	* 动态请求也由父页面 Tunnel 代理，因此必须把不再成立的站点限制换成
+	* 适用于沙箱 iframe 的策略。connect-src 保持关闭，防止页面绕过 bridge 直连。
+	*/
+	function relaxRemoteContentSecurityPolicy(documentValue) {
+		const policy = "default-src 'self' blob: data:; script-src 'self' blob: data: 'unsafe-inline' 'unsafe-eval'; style-src 'self' blob: data: 'unsafe-inline'; img-src 'self' blob: data:; font-src 'self' blob: data:; media-src 'self' blob: data:; worker-src 'self' blob:; connect-src 'none'; frame-src 'self' blob: data:";
+		for (const node of documentValue.querySelectorAll("meta[http-equiv]")) if ((node.getAttribute("http-equiv") ?? "").toLowerCase() === "content-security-policy") node.setAttribute("content", policy);
 	}
 	function isRecord(value) {
 		return typeof value === "object" && value !== null && !Array.isArray(value);
