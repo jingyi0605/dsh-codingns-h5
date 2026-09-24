@@ -1007,38 +1007,43 @@
 			logger.log("data-channel.close", { label: channel.label ?? null });
 			listeners.clear();
 		};
+		const processBytes = (bytes, value) => {
+			if (!bytes) {
+				logger.log("carrier.receive.invalid", {
+					dataType: Object.prototype.toString.call(value),
+					valueType: typeof value
+				});
+				return;
+			}
+			try {
+				const complete = acceptFragment(bytes);
+				if (complete === null) return;
+				logger.log("carrier.receive", {
+					bytes: complete.byteLength,
+					physicalBytes: bytes.byteLength,
+					prefix: bytesToHex(bytes.subarray(0, 8))
+				});
+				for (const listener of [...listeners]) listener(complete);
+			} catch (error) {
+				logger.log("carrier.fragment.error", {
+					physicalBytes: bytes.byteLength,
+					prefix: bytesToHex(bytes.subarray(0, 8)),
+					error: error instanceof Error ? error.message : String(error)
+				});
+				state = "closed";
+				clearFragments();
+				listeners.clear();
+				channel.close();
+			}
+		};
 		const onMessage = (event) => {
-			receiveChain = receiveChain.then(async () => {
-				const value = event.data;
-				const bytes = await toBytes$1(value);
-				if (!bytes) {
-					logger.log("carrier.receive.invalid", {
-						dataType: Object.prototype.toString.call(value),
-						valueType: typeof value
-					});
-					return;
-				}
-				try {
-					const complete = acceptFragment(bytes);
-					if (complete === null) return;
-					logger.log("carrier.receive", {
-						bytes: complete.byteLength,
-						physicalBytes: bytes.byteLength,
-						prefix: Array.from(bytes.subarray(0, 8)).map((value2) => value2.toString(16).padStart(2, "0")).join("")
-					});
-					for (const listener of [...listeners]) listener(complete);
-				} catch (error) {
-					logger.log("carrier.fragment.error", {
-						physicalBytes: bytes.byteLength,
-						prefix: Array.from(bytes.subarray(0, 8)).map((value2) => value2.toString(16).padStart(2, "0")).join(""),
-						error: error instanceof Error ? error.message : String(error)
-					});
-					state = "closed";
-					clearFragments();
-					listeners.clear();
-					channel.close();
-				}
-			}).catch((error) => {
+			const value = event.data;
+			const result = toBytes$1(value);
+			if (!(result instanceof Promise)) {
+				processBytes(result, value);
+				return;
+			}
+			receiveChain = receiveChain.then(() => result).then((bytes) => processBytes(bytes, value)).catch((error) => {
 				logger.log("carrier.receive.error", { error: error instanceof Error ? error.message : String(error) });
 			});
 		};
@@ -1230,12 +1235,15 @@
 			body: body.slice()
 		};
 	}
-	async function toBytes$1(value) {
+	function toBytes$1(value) {
 		if (value instanceof Uint8Array) return new Uint8Array(value);
 		if (value instanceof ArrayBuffer) return new Uint8Array(value.slice(0));
 		if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength));
-		if (typeof Blob !== "undefined" && value instanceof Blob) return new Uint8Array(await value.arrayBuffer());
+		if (typeof Blob !== "undefined" && value instanceof Blob) return value.arrayBuffer().then((body) => new Uint8Array(body));
 		return null;
+	}
+	function bytesToHex(value) {
+		return [...value].map((item) => item.toString(16).padStart(2, "0")).join("");
 	}
 	//#endregion
 	//#region src/transport/webrtc-client.ts
@@ -1525,7 +1533,7 @@
 			const iframe = document.createElement("iframe");
 			iframe.className = "dsh-remote-web-context";
 			iframe.setAttribute("title", "Remote DSH Web");
-			iframe.setAttribute("sandbox", "allow-downloads allow-forms allow-modals allow-popups allow-scripts");
+			iframe.setAttribute("sandbox", "allow-downloads allow-forms allow-modals allow-popups allow-scripts allow-same-origin");
 			iframe.setAttribute("referrerpolicy", "no-referrer");
 			iframe.style.width = "100%";
 			iframe.style.height = "100%";
@@ -1665,6 +1673,26 @@
 					});
 					return;
 				}
+				if (message.kind === "script") {
+					const input = isRecord(message.input) ? message.input : {};
+					const path = resolveRemotePath(typeof input.path === "string" ? input.path : "/");
+					const url = await this.loadScript(path, void 0);
+					this.postResponse(message.id, {
+						ok: true,
+						url
+					});
+					return;
+				}
+				if (message.kind === "style") {
+					const input = isRecord(message.input) ? message.input : {};
+					const path = resolveRemotePath(typeof input.path === "string" ? input.path : "/");
+					const url = await this.loadStyle(path, void 0);
+					this.postResponse(message.id, {
+						ok: true,
+						url
+					});
+					return;
+				}
 				if (message.kind === "ws.open") {
 					const input = isRecord(message.input) ? message.input : {};
 					const opened = this.options.transport.openWebStreamWithId("web.ws.open", {
@@ -1736,11 +1764,54 @@
 		return `(() => {
     const pending = new Map();
     let nextId = 0;
+    let remoteLoadChain = Promise.resolve();
     const call = (kind, input, body) => new Promise((resolve, reject) => {
       const id = String(++nextId);
       pending.set(id, { resolve, reject });
       parent.postMessage({ kind, id, input, body }, '*');
     });
+    const isRemoteResource = (value) => {
+      try {
+        const parsed = new URL(value, location.href);
+        return parsed.protocol !== 'blob:' && (parsed.origin === location.origin || parsed.origin === 'null' || parsed.origin === 'https://dsh.remote.invalid');
+      } catch {
+        return false;
+      }
+    };
+    const remotePath = (value) => {
+      const parsed = new URL(value, location.href);
+      return parsed.pathname + parsed.search;
+    };
+    const isRemoteScript = (node) => node && node.nodeType === 1 && node.tagName === 'SCRIPT' && node.getAttribute('data-dsh-bridge-loaded') !== '1' && isRemoteResource(node.getAttribute('src') || '');
+    const isRemoteStyle = (node) => node && node.nodeType === 1 && node.tagName === 'LINK' && (node.getAttribute('rel') || '').toLowerCase() === 'stylesheet' && node.getAttribute('data-dsh-bridge-loaded') !== '1' && isRemoteResource(node.getAttribute('href') || '');
+    const queueRemoteNode = (parentNode, node, beforeNode, kind, attribute) => {
+      const source = node.getAttribute(attribute);
+      remoteLoadChain = remoteLoadChain.then(async () => {
+        const response = await call(kind, { path: remotePath(source) });
+        if (!response || typeof response.url !== 'string') throw new Error('远程资源加载失败');
+        const replacement = node.cloneNode(true);
+        replacement.setAttribute('data-dsh-bridge-loaded', '1');
+        replacement.setAttribute(attribute, response.url);
+        if (beforeNode) nativeInsertBefore.call(parentNode, replacement, beforeNode);
+        else nativeAppendChild.call(parentNode, replacement);
+      }).catch((error) => {
+        console.error('[dsh-codingns] remote resource load failed', error);
+        try { node.dispatchEvent(new Event('error')); } catch {}
+      });
+      return node;
+    };
+    const nativeAppendChild = Node.prototype.appendChild;
+    const nativeInsertBefore = Node.prototype.insertBefore;
+    Node.prototype.appendChild = function(node) {
+      if (isRemoteScript(node)) return queueRemoteNode(this, node, null, 'script', 'src');
+      if (isRemoteStyle(node)) return queueRemoteNode(this, node, null, 'style', 'href');
+      return nativeAppendChild.call(this, node);
+    };
+    Node.prototype.insertBefore = function(node, beforeNode) {
+      if (isRemoteScript(node)) return queueRemoteNode(this, node, beforeNode, 'script', 'src');
+      if (isRemoteStyle(node)) return queueRemoteNode(this, node, beforeNode, 'style', 'href');
+      return nativeInsertBefore.call(this, node, beforeNode);
+    };
     addEventListener('message', (event) => {
       const value = event.data;
       if (!value || value.kind === undefined) return;
