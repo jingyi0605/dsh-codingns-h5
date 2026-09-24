@@ -676,9 +676,11 @@
 		readyResolve;
 		readyReject;
 		debug;
+		generationValue;
 		constructor(options) {
 			this.options = options;
 			this.debug = options.debug ?? createDshTransportDebugLogger({ component: `session-${options.role}` });
+			this.generationValue = options.generation;
 			this.unsubscribe = options.carrier.subscribe((data) => this.receive(data));
 			if (options.onEnvelope) this.listeners.add(options.onEnvelope);
 		}
@@ -691,12 +693,15 @@
 		get capabilities() {
 			return this.remoteCapabilities;
 		}
+		get generation() {
+			return this.generationValue;
+		}
 		start() {
 			if (this.stateValue !== "idle") return;
 			this.stateValue = "handshaking";
 			this.debug.log("session.start", {
 				role: this.options.role,
-				generation: this.options.generation,
+				generation: this.generationValue,
 				hostId: this.options.hostScope.hostId,
 				hostKind: this.options.hostScope.kind
 			});
@@ -840,7 +845,16 @@
 			this.fail(/* @__PURE__ */ new Error("MESSAGE_INVALID"));
 		}
 		validateScope(envelope) {
-			if (envelope.generation !== this.options.generation || envelope.hostScope.hostId !== this.options.hostScope.hostId || envelope.hostScope.kind !== this.options.hostScope.kind) throw new Error("RESOURCE_SCOPE_STALE");
+			const isInitialHello = this.options.role === "host" && this.options.acceptInitialGeneration === true && this.stateValue === "handshaking" && envelope.channel === "session" && envelope.type === "session.hello" && envelope.sequence === 0;
+			if (envelope.hostScope.hostId !== this.options.hostScope.hostId || envelope.hostScope.kind !== this.options.hostScope.kind || !isInitialHello && envelope.generation !== this.generationValue) throw new Error("RESOURCE_SCOPE_STALE");
+			if (isInitialHello && envelope.generation !== this.generationValue) {
+				this.debug.log("session.generation.adopt", {
+					previousGeneration: this.generationValue,
+					generation: envelope.generation,
+					hostId: envelope.hostScope.hostId
+				});
+				this.generationValue = envelope.generation;
+			}
 		}
 		createEnvelope(type, channel, meta) {
 			return {
@@ -850,7 +864,7 @@
 				channel,
 				type,
 				sequence: this.messageCounter - 1,
-				generation: this.options.generation,
+				generation: this.generationValue,
 				hostScope: this.options.hostScope,
 				meta
 			};
@@ -2113,9 +2127,12 @@
         if (item && value.type === 'error') item.reject(new Error(value.body || 'Remote DSH WebSocket 失败'));
         const target = window.__dshRemoteSockets && window.__dshRemoteSockets.get(value.id);
         if (target) {
-          if (value.type === 'message') target.onmessage && target.onmessage({ data: value.body });
-          if (value.type === 'close') { target.readyState = 3; target.onclose && target.onclose(new CloseEvent('close')); }
-          if (value.type === 'error') target.onerror && target.onerror(new Event('error'));
+          if (value.type === 'message') target._emit?.('message', { data: value.body });
+          if (value.type === 'close') {
+            target.readyState = 3;
+            target._emit?.('close', new CloseEvent('close'));
+          }
+          if (value.type === 'error') target._emit?.('error', new Event('error'));
         }
       }
     });
@@ -2150,11 +2167,53 @@
     };
     window.__dshRemoteSockets = new Map();
     const RemoteWebSocket = class {
-      constructor(url) { this.url = String(url); this.readyState = 0; window.__dshRemoteSockets.set(this._id = String(++nextId), this); call('ws.open', { path: new URL(this.url, resourceBase()).pathname }).then(() => { this.readyState = 1; this.onopen && this.onopen(new Event('open')); }).catch((error) => { this.readyState = 3; this.onerror && this.onerror(new Error(error)); }); }
-      send(value) { if (this.readyState !== 1) throw new Error('WebSocket is not open'); parent.postMessage({ kind: 'ws.send', id: this._id, body: typeof value === 'string' ? value : value }, '*'); }
-      close(code, reason) { this.readyState = 2; parent.postMessage({ kind: 'ws.close', id: this._id, input: { code, reason } }, '*'); this.readyState = 3; this.onclose && this.onclose(new CloseEvent('close', { code: code || 1000, reason: reason || '' })); }
-      addEventListener(type, listener) { this['on' + type] = listener; }
-      removeEventListener(type, listener) { if (this['on' + type] === listener) this['on' + type] = null; }
+      static CONNECTING = 0;
+      static OPEN = 1;
+      static CLOSING = 2;
+      static CLOSED = 3;
+      constructor(url) {
+        this.url = String(url);
+        this.readyState = RemoteWebSocket.CONNECTING;
+        this._listeners = new Map();
+        window.__dshRemoteSockets.set(this._id = String(++nextId), this);
+        call('ws.open', { path: new URL(this.url, resourceBase()).pathname }).then(() => {
+          if (this.readyState !== RemoteWebSocket.CONNECTING) return;
+          this.readyState = RemoteWebSocket.OPEN;
+          this._emit('open', new Event('open'));
+        }).catch((error) => {
+          this.readyState = RemoteWebSocket.CLOSED;
+          this._emit('error', new Error(error));
+        });
+      }
+      send(value) {
+        if (this.readyState !== RemoteWebSocket.OPEN) throw new Error('WebSocket is not open');
+        parent.postMessage({ kind: 'ws.send', id: this._id, body: typeof value === 'string' ? value : value }, '*');
+      }
+      close(code, reason) {
+        if (this.readyState === RemoteWebSocket.CLOSING || this.readyState === RemoteWebSocket.CLOSED) return;
+        this.readyState = RemoteWebSocket.CLOSING;
+        parent.postMessage({ kind: 'ws.close', id: this._id, input: { code, reason } }, '*');
+        this.readyState = RemoteWebSocket.CLOSED;
+        this._emit('close', new CloseEvent('close', { code: code || 1000, reason: reason || '' }));
+      }
+      addEventListener(type, listener, options) {
+        const listeners = this._listeners.get(type) || [];
+        if (!listeners.some((item) => item.listener === listener)) listeners.push({ listener, once: options?.once === true });
+        this._listeners.set(type, listeners);
+      }
+      removeEventListener(type, listener) {
+        const listeners = this._listeners.get(type) || [];
+        this._listeners.set(type, listeners.filter((item) => item.listener !== listener));
+      }
+      _emit(type, event) {
+        const listeners = [...(this._listeners.get(type) || [])];
+        for (const item of listeners) {
+          try { item.listener.call(this, event); } catch (error) { setTimeout(() => { throw error; }, 0); }
+          if (item.once) this.removeEventListener(type, item.listener);
+        }
+        const handler = this['on' + type];
+        if (typeof handler === 'function') handler.call(this, event);
+      }
     };
     window.WebSocket = RemoteWebSocket;
     const openRemoteStream = (endpoint, payload, signal) => {
