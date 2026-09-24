@@ -1995,7 +1995,10 @@
             ? input.url
             : String(input);
       const parsed = new URL(url, resourceBase());
-      if (parsed.origin === location.origin || parsed.origin === 'null' || parsed.origin === 'https://dsh.remote.invalid') {
+      // DSH 官方 client-connection 使用 http://dsh.internal 作为逻辑 API 基址；
+      // 这是 iframe 内的虚拟地址，必须和 remote.invalid 一样转入 Web Tunnel，
+      // 不能让浏览器按真实网络请求处理并被 CSP 拦截。
+      if (parsed.origin === location.origin || parsed.origin === 'null' || parsed.origin === 'https://dsh.remote.invalid' || parsed.origin === 'http://dsh.internal') {
         const request = typeof input === 'string' ? undefined : input;
         const method = init?.method ?? request?.method;
         const headers = init?.headers ?? request?.headers;
