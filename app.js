@@ -6,6 +6,14 @@ const app = document.querySelector("#app");
 let session = readSession();
 let activeRuntime = null;
 
+// 页面刷新或关闭时必须释放 WebRTC、信令和 iframe WebSocket，避免 Relay 房间
+// 长时间保留旧 Client，最终触发 TOO_MANY_CLIENTS 并污染下一次联调。
+window.addEventListener("pagehide", () => {
+  const runtime = activeRuntime;
+  activeRuntime = null;
+  void runtime?.dispose().catch(() => undefined);
+});
+
 render();
 
 function setRemoteWebMode(enabled) {
