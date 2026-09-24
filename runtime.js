@@ -1785,7 +1785,7 @@
       const parsed = new URL(value, resourceBase());
       return parsed.pathname + parsed.search;
     };
-    const resourceAttribute = (node, attribute) => node && (node.getAttribute(attribute) || node[attribute] || '');
+    const resourceAttribute = (node, attribute) => node && (node.getAttribute('data-dsh-bridge-source') || node.getAttribute(attribute) || node[attribute] || '');
     const isRemoteScript = (node) => node && node.nodeType === 1 && node.tagName === 'SCRIPT' && node.getAttribute('data-dsh-bridge-loaded') !== '1' && isRemoteResource(resourceAttribute(node, 'src'));
     const isRemoteStyle = (node) => node && node.nodeType === 1 && node.tagName === 'LINK' && (node.getAttribute('rel') || '').toLowerCase() === 'stylesheet' && node.getAttribute('data-dsh-bridge-loaded') !== '1' && isRemoteResource(resourceAttribute(node, 'href'));
     const queueRemoteNode = (parentNode, node, beforeNode, kind, attribute) => {
@@ -1820,6 +1820,34 @@
     const nativeFragmentPrepend = DocumentFragment.prototype.prepend;
     const nativeInsertAdjacentHTML = Element.prototype.insertAdjacentHTML;
     const nativeReplaceChildren = Element.prototype.replaceChildren;
+    const scriptSrcDescriptor = Object.getOwnPropertyDescriptor(HTMLScriptElement.prototype, 'src');
+    const linkHrefDescriptor = Object.getOwnPropertyDescriptor(HTMLLinkElement.prototype, 'href');
+    if (scriptSrcDescriptor?.set && scriptSrcDescriptor.get) {
+      Object.defineProperty(HTMLScriptElement.prototype, 'src', {
+        configurable: true,
+        get() { return this.getAttribute('data-dsh-bridge-source') || scriptSrcDescriptor.get.call(this); },
+        set(value) {
+          const source = String(value);
+          if (isRemoteResource(source)) {
+            this.setAttribute('data-dsh-bridge-source', source);
+            scriptSrcDescriptor.set.call(this, 'about:blank');
+          } else scriptSrcDescriptor.set.call(this, value);
+        },
+      });
+    }
+    if (linkHrefDescriptor?.set && linkHrefDescriptor.get) {
+      Object.defineProperty(HTMLLinkElement.prototype, 'href', {
+        configurable: true,
+        get() { return this.getAttribute('data-dsh-bridge-source') || linkHrefDescriptor.get.call(this); },
+        set(value) {
+          const source = String(value);
+          if (isRemoteResource(source)) {
+            this.setAttribute('data-dsh-bridge-source', source);
+            linkHrefDescriptor.set.call(this, 'about:blank');
+          } else linkHrefDescriptor.set.call(this, value);
+        },
+      });
+    }
     const queueFragmentResources = (parentNode, fragment) => {
       if (!fragment || fragment.nodeType !== 11 || !fragment.querySelectorAll) return false;
       const resources = [...fragment.querySelectorAll('script[src],link[rel="stylesheet"][href]')].filter((node) => isRemoteScript(node) || isRemoteStyle(node));
