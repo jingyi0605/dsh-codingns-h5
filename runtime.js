@@ -1840,6 +1840,10 @@
 					});
 					this.sockets.set(message.id, opened.streamId);
 					this.socketWindows.set(message.id, sourceWindow);
+					this.debug.log("bridge.ws.register", {
+						id: message.id,
+						streamId: opened.streamId
+					});
 					let resolveReady;
 					let rejectReady;
 					const ready = new Promise((resolve, reject) => {
@@ -1871,7 +1875,7 @@
 					this.debug.log("bridge.ws.receive", {
 						id: message.id,
 						hasSocket: streamId !== void 0,
-						streamId
+						streamId: streamId ?? null
 					});
 					if (!streamId) throw new Error("Remote DSH WebSocket 不存在");
 					const body = typeof message.body === "string" ? new TextEncoder().encode(message.body) : toBytes(message.body);
@@ -1960,6 +1964,11 @@
 				}
 				if (this.sockets.get(id) === streamId) this.sockets.delete(id);
 				this.socketWindows.delete(id);
+				this.debug.log("bridge.ws.consume.finally", {
+					id,
+					streamId,
+					hasSocket: this.sockets.has(id)
+				});
 			}
 		}
 		postResponse(id, value) {
