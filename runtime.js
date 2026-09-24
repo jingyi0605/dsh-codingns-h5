@@ -354,6 +354,16 @@
 				this.finishStream(id, stream);
 			}
 		}
+		/** 替换物理 carrier；逻辑请求已在 invalidate 中失败，后续请求使用新线路。 */
+		replaceCarrier(carrier) {
+			if (this.disposed) throw new Error("Transport 已关闭");
+			this.unsubscribe();
+			this.carrier = carrier;
+			this.unsubscribe = carrier.subscribe((data) => this.receive(data));
+		}
+		setSession(session) {
+			this.session = session;
+		}
 		rotateGeneration(idPrefix, error = /* @__PURE__ */ new Error("Transport generation 已过期")) {
 			this.invalidate(error);
 			this.idPrefix = idPrefix;
@@ -535,9 +545,11 @@
 		options;
 		listeners = /* @__PURE__ */ new Set();
 		multiplexer;
+		currentCarrier;
 		generation;
 		constructor(options) {
 			this.options = options;
+			this.currentCarrier = options.carrier;
 			this.generation = options.generation;
 			this.multiplexer = new DshTunnelMultiplexer(options.carrier, {
 				idPrefix: `g${options.generation.id}`,
@@ -611,12 +623,26 @@
 			this.generation = generation;
 			for (const listener of [...this.listeners]) listener(generation);
 		}
+		/** 物理 WebRTC 重连后替换 carrier/session，并让 DSH Connection 看见新 generation。 */
+		replaceConnection(carrier, session, generation) {
+			this.multiplexer.replaceCarrier(carrier);
+			this.multiplexer.setSession(session);
+			this.currentCarrier = carrier;
+			this.updateGeneration(generation);
+		}
+		/** 物理连接失效时立即结束旧请求和旧 generation。 */
+		invalidateConnection(error = /* @__PURE__ */ new Error("WebRTC connection closed")) {
+			this.multiplexer.invalidate(error);
+			const previous = this.generation;
+			this.generation = void 0;
+			if (previous) for (const listener of [...this.listeners]) listener(void 0);
+		}
 		close() {
 			this.multiplexer.close();
 			const previous = this.generation;
 			this.generation = void 0;
 			if (previous) for (const listener of [...this.listeners]) listener(void 0);
-			return this.options.carrier.close();
+			return this.currentCarrier.close();
 		}
 		/** 给 pre-Cordis 启动胶水使用，不直接安装 DSH Connection。 */
 		asTransportHooks() {
@@ -982,6 +1008,7 @@
 		const logger = options.debug ?? createDshTransportDebugLogger({ component: "data-channel" });
 		let state = channel.readyState === "open" ? "open" : "connecting";
 		const listeners = /* @__PURE__ */ new Set();
+		const closeListeners = /* @__PURE__ */ new Set();
 		const high = options.highWaterMark ?? 1048576;
 		const low = options.lowWaterMark ?? 262144;
 		const timeoutMs = options.backpressureTimeoutMs ?? 3e4;
@@ -1002,10 +1029,18 @@
 			state = "open";
 			logger.log("data-channel.open", { label: channel.label ?? null });
 		};
+		let closeNotified = false;
+		const notifyClosed = (reason) => {
+			if (closeNotified) return;
+			closeNotified = true;
+			for (const listener of [...closeListeners]) listener(reason);
+			closeListeners.clear();
+		};
 		const onClose = () => {
 			state = "closed";
 			clearFragments();
 			logger.log("data-channel.close", { label: channel.label ?? null });
+			notifyClosed("DataChannel closed");
 			listeners.clear();
 		};
 		const processBytes = (bytes, value) => {
@@ -1190,10 +1225,19 @@
 				listeners.add(listener);
 				return () => listeners.delete(listener);
 			},
-			async close() {
+			onClosed(listener) {
+				if (closeNotified) {
+					listener("DataChannel closed");
+					return () => void 0;
+				}
+				closeListeners.add(listener);
+				return () => closeListeners.delete(listener);
+			},
+			async close(reason) {
 				if (state === "closed") return;
 				state = "closed";
 				clearFragments();
+				notifyClosed(reason ?? "DataChannel closed");
 				channel.close();
 				channel.removeEventListener("open", onOpen);
 				channel.removeEventListener("close", onClose);
@@ -1281,9 +1325,37 @@
 		const channel = peerConnection.createDataChannel(TUNNEL_DATA_CHANNEL_LABEL);
 		const carrier = createDataChannelCarrier(channel, { ...options.debug ? { debug: options.debug } : {} });
 		let closed = false;
+		let closeNotified = false;
+		const closeListeners = /* @__PURE__ */ new Set();
+		const notifyClosed = (error) => {
+			if (closeNotified) return;
+			closeNotified = true;
+			debug.log("webrtc.connection.closed", { reason: error?.message ?? "closed" });
+			for (const listener of [...closeListeners]) listener(error);
+			closeListeners.clear();
+		};
+		const onSignalingClose = () => notifyClosed(/* @__PURE__ */ new Error("Relay signaling closed"));
+		const onSignalingError = () => notifyClosed(/* @__PURE__ */ new Error("Relay signaling error"));
+		const onPeerState = () => {
+			const state = peerConnection;
+			const value = state.connectionState ?? state.iceConnectionState;
+			debug.log("webrtc.peer.state", { state: value ?? "unknown" });
+			if (value === "failed" || value === "disconnected" || value === "closed") notifyClosed(/* @__PURE__ */ new Error(`PeerConnection ${value}`));
+		};
+		signaling.addEventListener("close", onSignalingClose);
+		signaling.addEventListener("error", onSignalingError);
+		peerConnection.addEventListener?.("connectionstatechange", onPeerState);
+		peerConnection.addEventListener?.("iceconnectionstatechange", onPeerState);
+		const carrierClosed = (reason) => notifyClosed(new Error(reason ?? "DataChannel closed"));
+		carrier.onClosed?.(carrierClosed);
 		const close = async () => {
 			if (closed) return;
 			closed = true;
+			notifyClosed(/* @__PURE__ */ new Error("client closed"));
+			signaling.removeEventListener("close", onSignalingClose);
+			signaling.removeEventListener("error", onSignalingError);
+			peerConnection.removeEventListener?.("connectionstatechange", onPeerState);
+			peerConnection.removeEventListener?.("iceconnectionstatechange", onPeerState);
 			for (const cleanup of cleanupListeners.splice(0)) cleanup();
 			await carrier.close();
 			peerConnection.close();
@@ -1324,6 +1396,14 @@
 				carrier,
 				peerConnection,
 				signaling,
+				onClosed: (listener) => {
+					if (closeNotified) {
+						listener(/* @__PURE__ */ new Error("connection closed"));
+						return () => void 0;
+					}
+					closeListeners.add(listener);
+					return () => closeListeners.delete(listener);
+				},
 				close
 			};
 		} catch (error) {
@@ -2222,20 +2302,18 @@
 		});
 		options.onStatus?.("ticket");
 		const device = chooseDshDevice(await options.controlApi.listDevices(signal), options.dshDeviceId);
-		const ticket = await options.controlApi.createClientTicket(device.dshDeviceId, signal);
+		let generation = options.generation ?? 1;
+		let connection;
+		let session;
+		let reconnecting = false;
+		let stopped = false;
+		let reconnectTimer;
+		let reconnectRef;
+		const firstTicket = await options.controlApi.createClientTicket(device.dshDeviceId, signal);
 		options.onStatus?.("webrtc");
-		const connection = await connectWebRtcClient({
-			signalingTicket: ticket,
-			signalingSocketFactory: (url) => new WebSocket(url),
-			peerConnectionFactory: ({ iceServers, iceTransportPolicy }) => createPeerConnection({
-				iceServers,
-				iceTransportPolicy
-			}),
-			debug
-		});
-		const generation = options.generation ?? 1;
-		const hostScope = resolveDshHostScope(ticket);
-		const session = new DshSession({
+		connection = await connectWebRtcClient(createWebRtcClientOptions(firstTicket, debug));
+		const hostScope = resolveDshHostScope(firstTicket);
+		session = new DshSession({
 			carrier: connection.carrier,
 			role: "client",
 			generation: String(generation),
@@ -2251,8 +2329,72 @@
 			hostScope,
 			session,
 			requireSessionReady: true,
+			reconnect: (reconnectSignal) => reconnectRef?.(reconnectSignal) ?? Promise.reject(/* @__PURE__ */ new Error("H5 重连尚未就绪")),
 			debug
 		});
+		const reconnect = async () => {
+			if (stopped || reconnecting) return;
+			reconnecting = true;
+			debug.log("bootstrap.reconnect.start", { generation });
+			transport.invalidateConnection(/* @__PURE__ */ new Error("WebRTC connection closed"));
+			session?.close("旧 WebRTC generation 已失效");
+			try {
+				for (let attempt = 0; !stopped; attempt += 1) try {
+					const waitMs = Math.min(1e4, 500 * (attempt + 1));
+					if (attempt > 0) await delay(waitMs, signal);
+					options.onStatus?.("ticket");
+					const ticket = await options.controlApi.createClientTicket(device.dshDeviceId, signal);
+					debug.log("bootstrap.reconnect.ticket", { generation: generation + 1 });
+					options.onStatus?.("webrtc");
+					const nextConnection = await connectWebRtcClient(createWebRtcClientOptions(ticket, debug));
+					const nextSession = new DshSession({
+						carrier: nextConnection.carrier,
+						role: "client",
+						generation: String(generation + 1),
+						hostScope: resolveDshHostScope(ticket),
+						debug
+					});
+					nextSession.start();
+					await waitForSessionReady(nextSession, signal, 15e3);
+					const previous = connection;
+					connection = nextConnection;
+					session = nextSession;
+					generation += 1;
+					transport.replaceConnection(nextConnection.carrier, nextSession, {
+						id: generation,
+						host: { home: "/" }
+					});
+					attachConnectionClose(nextConnection);
+					await previous?.close();
+					debug.log("bootstrap.reconnect.ready", { generation });
+					options.onStatus?.("remote-web");
+					return;
+				} catch (error) {
+					debug.log("bootstrap.reconnect.error", {
+						generation,
+						error: error instanceof Error ? error.message : String(error)
+					});
+					if (stopped || signal?.aborted) throw error;
+				}
+			} finally {
+				reconnecting = false;
+			}
+		};
+		const attachConnectionClose = (current) => {
+			current.onClosed((error) => {
+				if (stopped || current !== connection) return;
+				debug.log("bootstrap.connection.closed", {
+					generation,
+					error: error?.message ?? "closed"
+				});
+				reconnectTimer = setTimeout(() => {
+					reconnectTimer = void 0;
+					reconnect();
+				}, 50);
+			});
+		};
+		reconnectRef = reconnect;
+		attachConnectionClose(connection);
 		let webContext;
 		try {
 			session.start();
@@ -2269,22 +2411,53 @@
 			return {
 				dshDeviceId: device.dshDeviceId,
 				transport,
-				session,
+				get session() {
+					return session;
+				},
 				...webContext ? { webContext } : {},
 				dispose: async () => {
+					stopped = true;
+					if (reconnectTimer !== void 0) clearTimeout(reconnectTimer);
 					await webContext?.dispose();
-					session.close();
+					session?.close();
 					await transport.close();
-					await connection.close();
+					await connection?.close();
 				}
 			};
 		} catch (error) {
 			await webContext?.dispose();
-			session.close();
+			stopped = true;
+			session?.close();
 			await transport.close();
-			await connection.close();
+			await connection?.close();
 			throw error;
 		}
+	}
+	function createWebRtcClientOptions(ticket, debug) {
+		return {
+			signalingTicket: ticket,
+			signalingSocketFactory: (url) => new WebSocket(url),
+			peerConnectionFactory: ({ iceServers, iceTransportPolicy }) => createPeerConnection({
+				iceServers,
+				iceTransportPolicy
+			}),
+			debug
+		};
+	}
+	async function delay(ms, signal) {
+		if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : /* @__PURE__ */ new Error("请求已取消");
+		await new Promise((resolve, reject) => {
+			const timer = setTimeout(() => {
+				signal?.removeEventListener("abort", abort);
+				resolve();
+			}, ms);
+			const abort = () => {
+				clearTimeout(timer);
+				signal?.removeEventListener("abort", abort);
+				reject(signal?.reason instanceof Error ? signal.reason : /* @__PURE__ */ new Error("请求已取消"));
+			};
+			signal?.addEventListener("abort", abort, { once: true });
+		});
 	}
 	async function waitForSessionReady(session, signal, timeoutMs) {
 		await withTimeout(session.waitReady(signal), signal, timeoutMs, "等待 DSH session.ready 超时");
