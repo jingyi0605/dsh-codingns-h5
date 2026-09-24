@@ -1770,16 +1770,19 @@
       pending.set(id, { resolve, reject });
       parent.postMessage({ kind, id, input, body }, '*');
     });
+    // srcdoc 的 location.href 是 about:srcdoc，不能作为相对 URL 的基址。
+    // prepareBootHtml 已写入固定 base，所有资源解析必须以 document.baseURI 为准。
+    const resourceBase = () => document.baseURI && document.baseURI !== 'about:srcdoc' ? document.baseURI : 'https://dsh.remote.invalid/';
     const isRemoteResource = (value) => {
       try {
-        const parsed = new URL(value, location.href);
+        const parsed = new URL(value, resourceBase());
         return parsed.protocol !== 'blob:' && (parsed.origin === location.origin || parsed.origin === 'null' || parsed.origin === 'https://dsh.remote.invalid');
       } catch {
         return false;
       }
     };
     const remotePath = (value) => {
-      const parsed = new URL(value, location.href);
+      const parsed = new URL(value, resourceBase());
       return parsed.pathname + parsed.search;
     };
     const resourceAttribute = (node, attribute) => node && (node.getAttribute(attribute) || node[attribute] || '');
@@ -1954,7 +1957,7 @@
     const originalFetch = window.fetch.bind(window);
     window.fetch = async (input, init) => {
       const url = typeof input === 'string' ? input : input.url;
-      const parsed = new URL(url, location.href);
+      const parsed = new URL(url, resourceBase());
       if (parsed.origin === location.origin || parsed.origin === 'null' || parsed.origin === 'https://dsh.remote.invalid') {
         const response = await call('fetch', { path: parsed.pathname + parsed.search, method: init && init.method, headers: init && [...new Headers(init.headers).entries()] }, typeof init?.body === 'string' ? init.body : undefined);
         return new Response(response.body, { status: response.status, headers: response.headers });
@@ -1963,7 +1966,7 @@
     };
     window.__dshRemoteSockets = new Map();
     window.WebSocket = class RemoteWebSocket {
-      constructor(url) { this.url = String(url); this.readyState = 0; window.__dshRemoteSockets.set(this._id = String(++nextId), this); call('ws.open', { path: new URL(this.url, location.href).pathname }).then(() => { this.readyState = 1; this.onopen && this.onopen(new Event('open')); }).catch((error) => { this.readyState = 3; this.onerror && this.onerror(new Error(error)); }); }
+      constructor(url) { this.url = String(url); this.readyState = 0; window.__dshRemoteSockets.set(this._id = String(++nextId), this); call('ws.open', { path: new URL(this.url, resourceBase()).pathname }).then(() => { this.readyState = 1; this.onopen && this.onopen(new Event('open')); }).catch((error) => { this.readyState = 3; this.onerror && this.onerror(new Error(error)); }); }
       send(value) { if (this.readyState !== 1) throw new Error('WebSocket is not open'); parent.postMessage({ kind: 'ws.send', id: this._id, body: typeof value === 'string' ? value : value }, '*'); }
       close(code, reason) { this.readyState = 2; parent.postMessage({ kind: 'ws.close', id: this._id, input: { code, reason } }, '*'); this.readyState = 3; this.onclose && this.onclose(new CloseEvent('close', { code: code || 1000, reason: reason || '' })); }
       addEventListener(type, listener) { this['on' + type] = listener; }
