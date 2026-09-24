@@ -2044,13 +2044,14 @@
       return originalFetch(input, init);
     };
     window.__dshRemoteSockets = new Map();
-    window.WebSocket = class RemoteWebSocket {
+    const RemoteWebSocket = class {
       constructor(url) { this.url = String(url); this.readyState = 0; window.__dshRemoteSockets.set(this._id = String(++nextId), this); call('ws.open', { path: new URL(this.url, resourceBase()).pathname }).then(() => { this.readyState = 1; this.onopen && this.onopen(new Event('open')); }).catch((error) => { this.readyState = 3; this.onerror && this.onerror(new Error(error)); }); }
       send(value) { if (this.readyState !== 1) throw new Error('WebSocket is not open'); parent.postMessage({ kind: 'ws.send', id: this._id, body: typeof value === 'string' ? value : value }, '*'); }
       close(code, reason) { this.readyState = 2; parent.postMessage({ kind: 'ws.close', id: this._id, input: { code, reason } }, '*'); this.readyState = 3; this.onclose && this.onclose(new CloseEvent('close', { code: code || 1000, reason: reason || '' })); }
       addEventListener(type, listener) { this['on' + type] = listener; }
       removeEventListener(type, listener) { if (this['on' + type] === listener) this['on' + type] = null; }
     };
+    window.WebSocket = RemoteWebSocket;
     const openRemoteStream = (endpoint, payload, signal) => {
       const streamId = 'remote_' + String(++nextId) + '_' + Math.random().toString(36).slice(2);
       return (async function*() {
