@@ -1601,18 +1601,7 @@
 					sessionId: this.sessionIdValue,
 					path
 				}, signal));
-				const references = collectRelativeReferences(source, /\.(?:js)(?:\?[^\s"'`)]*)?$/u);
-				if (isH5DebugEnabled() && path.startsWith("/plugins/??")) {
-					const candidates = [...source.matchAll(/["'`]([^"'`]*client\.pdf[^"'`]*)["'`]/gu)].map((match) => match[1]).filter((value) => typeof value === "string");
-					if (candidates.length > 0) {
-						const marker = source.indexOf("client.pdf.js");
-						console.debug("[dsh-codingns] plugin dependency references", {
-							path,
-							candidates: [...new Set(candidates)].slice(0, 20),
-							context: marker >= 0 ? source.slice(Math.max(0, marker - 500), marker + 500) : ""
-						});
-					}
-				}
+				const references = collectRelativeReferences(source, /\.(?:js)(?:\?[^\s"'`)]*)?$/u).filter((reference) => !(path.startsWith("/plugins/??") && /^\.\/client\.[A-Za-z0-9][A-Za-z0-9._-]*\.js(?:\?.*)?$/u.test(reference)));
 				const replacements = await Promise.all(references.map(async (reference) => {
 					const dependencyPath = resolveRelativeAssetPath(path, reference);
 					return [reference, await this.loadScript(dependencyPath, signal)];
@@ -2031,13 +2020,6 @@
 		if (/\.svg(?:$|\?)/u.test(path)) return "image/svg+xml";
 		if (/\.png(?:$|\?)/u.test(path)) return "image/png";
 		return "application/octet-stream";
-	}
-	function isH5DebugEnabled() {
-		try {
-			return new URLSearchParams(globalThis.location?.search ?? "").get("dshDebug") === "1";
-		} catch {
-			return false;
-		}
 	}
 	//#endregion
 	//#region src/client/dsh-h5-bootstrap.ts
