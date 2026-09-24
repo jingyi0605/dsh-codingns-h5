@@ -2051,6 +2051,53 @@
       addEventListener(type, listener) { this['on' + type] = listener; }
       removeEventListener(type, listener) { if (this['on' + type] === listener) this['on' + type] = null; }
     };
+    const NativeEventSource = globalThis.EventSource;
+    class RemoteEventSource {
+      static CONNECTING = 0;
+      static OPEN = 1;
+      static CLOSED = 2;
+      constructor(url) {
+        this.url = String(url);
+        this.readyState = 0;
+        this.withCredentials = false;
+        this._listeners = new Map();
+        const path = new URL(this.url, resourceBase()).pathname;
+        // HMR 的 /plugins/events 只负责开发期热更新；远程 Web 通过 Tunnel
+        // 运行时没有可用的 SSE 端点，模拟已打开的空事件源即可避免它触发
+        // DSH 主连接的重试逻辑。其它 EventSource 仍交给原生实现。
+        if (path === '/plugins/events') {
+          queueMicrotask(() => {
+            this.readyState = 1;
+            this._emit('open', new Event('open'));
+          });
+          return;
+        }
+        if (typeof NativeEventSource !== 'function') throw new Error('远程 DSH Web 不支持 EventSource');
+        this._native = new NativeEventSource(this.url);
+        this.readyState = this._native.readyState;
+      }
+      addEventListener(type, listener) {
+        const list = this._listeners.get(type) || [];
+        list.push(listener);
+        this._listeners.set(type, list);
+        this._native?.addEventListener(type, listener);
+      }
+      removeEventListener(type, listener) {
+        const list = this._listeners.get(type) || [];
+        this._listeners.set(type, list.filter((item) => item !== listener));
+        this._native?.removeEventListener(type, listener);
+      }
+      _emit(type, event) {
+        for (const listener of this._listeners.get(type) || []) listener.call(this, event);
+        const handler = this['on' + type];
+        if (typeof handler === 'function') handler.call(this, event);
+      }
+      close() {
+        this.readyState = 2;
+        this._native?.close();
+      }
+    }
+    globalThis.EventSource = RemoteEventSource;
   })();`;
 	}
 	function resolveRemotePath(value) {
