@@ -20,7 +20,7 @@
 	/** 编码为 `DSH1 | 4 字节 JSON 头长度 | JSON 头 | 原始 body`。 */
 	function encodeDshEnvelope(envelope, options = {}) {
 		validateDshEnvelope(envelope);
-		const maxBytes = options.maxBytes ?? 1048576;
+		const maxBytes = options.maxBytes ?? 16777216;
 		const maxMetaBytes = options.maxMetaBytes ?? 65536;
 		validateLimit(maxBytes, "Envelope");
 		validateLimit(maxMetaBytes, "Envelope meta");
@@ -41,7 +41,7 @@
 		return result;
 	}
 	function decodeDshEnvelope(data, options = {}) {
-		const maxBytes = options.maxBytes ?? 1048576;
+		const maxBytes = options.maxBytes ?? 16777216;
 		const maxMetaBytes = options.maxMetaBytes ?? 65536;
 		validateLimit(maxBytes, "Envelope");
 		validateLimit(maxMetaBytes, "Envelope meta");
@@ -985,7 +985,7 @@
 		const low = options.lowWaterMark ?? 262144;
 		const timeoutMs = options.backpressureTimeoutMs ?? 3e4;
 		const reassemblyTimeoutMs = options.reassemblyTimeoutMs ?? 3e4;
-		const maxReassemblyBytes = options.maxReassemblyBytes ?? 4194304;
+		const maxReassemblyBytes = options.maxReassemblyBytes ?? 16777216;
 		let chain = Promise.resolve();
 		let receiveChain = Promise.resolve();
 		let nextFragmentId = 0;
