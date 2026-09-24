@@ -1604,10 +1604,14 @@
 				const references = collectRelativeReferences(source, /\.(?:js)(?:\?[^\s"'`)]*)?$/u);
 				if (isH5DebugEnabled() && path.startsWith("/plugins/??")) {
 					const candidates = [...source.matchAll(/["'`]([^"'`]*client\.pdf[^"'`]*)["'`]/gu)].map((match) => match[1]).filter((value) => typeof value === "string");
-					if (candidates.length > 0) console.debug("[dsh-codingns] plugin dependency references", {
-						path,
-						candidates: [...new Set(candidates)].slice(0, 20)
-					});
+					if (candidates.length > 0) {
+						const marker = source.indexOf("client.pdf.js");
+						console.debug("[dsh-codingns] plugin dependency references", {
+							path,
+							candidates: [...new Set(candidates)].slice(0, 20),
+							context: marker >= 0 ? source.slice(Math.max(0, marker - 500), marker + 500) : ""
+						});
+					}
 				}
 				const replacements = await Promise.all(references.map(async (reference) => {
 					const dependencyPath = resolveRelativeAssetPath(path, reference);
