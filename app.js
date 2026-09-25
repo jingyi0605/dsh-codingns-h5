@@ -7,6 +7,14 @@ const app = document.querySelector("#app");
 let session = readSession();
 let activeRuntime = null;
 let deviceStatusTimer = null;
+let logoutInProgress = false;
+
+window.addEventListener("message", (event) => {
+  const iframeWindow = activeRuntime?.webContext?.iframe?.contentWindow;
+  if (iframeWindow === null || iframeWindow === undefined || event.source !== iframeWindow || event.origin !== window.location.origin) return;
+  if (event.data?.kind !== "codingns4dsh:remote-logout") return;
+  void logoutBrowserSession();
+});
 
 // 页面刷新或关闭时必须释放 WebRTC、信令和 iframe WebSocket，避免 Relay 房间
 // 长时间保留旧 Client，最终触发 TOO_MANY_CLIENTS 并污染下一次联调。
@@ -113,13 +121,7 @@ async function renderDevices() {
       <p id="status" class="muted status" role="status"></p>
     `;
     document.querySelector("#logout").addEventListener("click", async () => {
-      await activeRuntime?.dispose().catch(() => undefined);
-      activeRuntime = null;
-      await request("/api/public/auth/h5/logout", { method: "POST" }).catch(() => undefined);
-      session = null;
-      sessionStorage.removeItem(sessionStorageKey);
-      sessionStorage.removeItem(activeDeviceStorageKey);
-      render();
+      await logoutBrowserSession();
     });
     for (const button of document.querySelectorAll("[data-device-id]")) {
       button.addEventListener("click", () => startBootstrap(button.dataset.deviceId));
@@ -141,6 +143,20 @@ async function renderDevices() {
     }
     app.innerHTML = `<p class="error">${escapeHtml(error instanceof Error ? error.message : "读取设备失败")}</p>`;
   }
+}
+
+async function logoutBrowserSession() {
+  if (logoutInProgress) return;
+  logoutInProgress = true;
+  const runtime = activeRuntime;
+  activeRuntime = null;
+  await runtime?.dispose().catch(() => undefined);
+  await request("/api/public/auth/h5/logout", { method: "POST" }).catch(() => undefined);
+  session = null;
+  sessionStorage.removeItem(sessionStorageKey);
+  sessionStorage.removeItem(activeDeviceStorageKey);
+  render();
+  logoutInProgress = false;
 }
 
 // 设备列表是跨版本边界，兼容旧控制站可能返回的下划线字段，避免明细因 DTO 命名差异丢失。
