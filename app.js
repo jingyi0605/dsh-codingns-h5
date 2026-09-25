@@ -98,7 +98,7 @@ async function renderDevices() {
 
   try {
     const response = await request("/api/v1/dsh/devices");
-    const devices = Array.isArray(response.devices) ? response.devices : [];
+    const devices = Array.isArray(response.devices) ? response.devices.map(normalizeDevice) : [];
     // 控制站会返回账号下全部 DSH 设备；离线设备保留在列表中，避免用户误以为设备已被删除。
     const visibleDevices = devices.filter((device) => device.status === "active" || device.status === "disabled");
     app.innerHTML = `
@@ -143,6 +143,18 @@ async function renderDevices() {
   }
 }
 
+// 设备列表是跨版本边界，兼容旧控制站可能返回的下划线字段，避免明细因 DTO 命名差异丢失。
+function normalizeDevice(device) {
+  return {
+    ...device,
+    dshDeviceId: device.dshDeviceId ?? device.dsh_device_id ?? device.deviceId ?? device.device_id,
+    displayName: device.displayName ?? device.display_name,
+    dshVersion: device.dshVersion ?? device.dsh_version,
+    computerName: device.computerName ?? device.computer_name,
+    lastHeartbeatAt: device.lastHeartbeatAt ?? device.last_heartbeat_at ?? null,
+  };
+}
+
 function deviceCard(device) {
   const id = escapeHtml(device.dshDeviceId);
   const name = escapeHtml(device.displayName || device.dshDeviceId);
@@ -151,9 +163,8 @@ function deviceCard(device) {
   return `
     <article class="device-card" data-status="${escapeHtml(device.status)}" data-online="${online ? "true" : "false"}">
       <div>
-        <div class="device-card__title"><span class="device-status-dot" aria-hidden="true"></span><h3>${name}</h3><span class="device-status-label">${online ? "在线" : "离线"}</span></div>
-        <p class="mono">${id}</p>
-        <p class="muted device-details">版本：${escapeHtml(device.dshVersion || "未知")} · 计算机名：${escapeHtml(device.computerName || "未知")}</p>
+        <div class="device-card__title"><span class="device-status-dot" aria-hidden="true"></span><h3>${name}</h3><span class="mono device-id" title="${id}">${id}</span></div>
+        <p class="muted device-details"><span>版本：${escapeHtml(device.dshVersion || "未知")}</span><span>计算机名：${escapeHtml(device.computerName || "未知")}</span></p>
         <p class="muted device-heartbeat" data-heartbeat="${heartbeat}" data-online="${online ? "true" : "false"}">${formatDevicePresence(device)}</p>
       </div>
       <button class="primary" data-device-id="${id}" type="button" ${online ? "" : "disabled"}>${online ? "连接" : "不可用"}</button>
@@ -216,8 +227,6 @@ function refreshDevicePresenceLabels() {
     const online = active && heartbeat !== "" && Date.now() - Date.parse(heartbeat) < 45_000;
     card?.setAttribute("data-online", online ? "true" : "false");
     element.setAttribute("data-online", online ? "true" : "false");
-    const label = card?.querySelector(".device-status-label");
-    if (label) label.textContent = online ? "在线" : "离线";
     const button = card?.querySelector("[data-device-id]");
     if (button instanceof HTMLButtonElement) {
       button.disabled = !online;

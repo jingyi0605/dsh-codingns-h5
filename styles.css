@@ -213,14 +213,16 @@ body.dsh-device-list-mode .cyber-card { padding-left: 40px; padding-right: 40px;
 .device-card { display: flex; align-items: center; justify-content: space-between; gap: 20px; min-width: 0; padding: 14px; border: 1px solid var(--cyber-border-dim); border-radius: 8px; background: var(--cyber-bg-input); }
 .device-card > div:first-child { min-width: 0; flex: 1 1 auto; }
 .device-card__title { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.device-card h3 { margin: 0; font-size: 15px; }
+.device-card h3 { min-width: 0; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; }
 .device-status-dot { width: 9px; height: 9px; flex: 0 0 9px; border-radius: 50%; background: #ef4444; box-shadow: 0 0 0 3px rgba(239, 68, 68, .12); }
 .device-card[data-online="true"] .device-status-dot { background: #10b981; box-shadow: 0 0 0 3px rgba(16, 185, 129, .14), 0 0 12px rgba(16, 185, 129, .45); animation: dsh-status-pulse 2s ease-in-out infinite; }
-.device-status-label { color: var(--cyber-text-dim); font-size: 11px; letter-spacing: .06em; white-space: nowrap; }
-.device-card[data-online="true"] .device-status-label { color: #10b981; }
+.device-id { flex: 0 1 50%; min-width: 0; margin-left: auto; overflow: hidden; color: var(--cyber-text-dim); text-align: right; text-overflow: ellipsis; white-space: nowrap; }
 @keyframes dsh-status-pulse { 50% { opacity: .55; } }
 .device-card p { margin: 0; }
-.device-details { overflow-wrap: anywhere; }
+.device-details { display: grid; gap: 2px; overflow-wrap: anywhere; }
+.device-details span { display: block; }
+.device-heartbeat[data-online="true"] { color: #10b981; }
+.device-heartbeat[data-online="false"] { color: #ef4444; }
 .device-card .primary { flex: 0 0 auto; min-width: 88px; min-height: 36px; padding: 0 14px; border: 1px solid var(--cyber-border-strong); border-radius: 6px; background: linear-gradient(135deg, var(--cyber-primary), var(--cyber-accent)); color: white; white-space: nowrap; word-break: keep-all; }
 .device-card .primary:disabled { border-color: var(--cyber-border-dim); background: var(--cyber-bg-hover); color: var(--cyber-text-muted); cursor: not-allowed; opacity: .8; }
 .loading, .empty { color: var(--cyber-text-dim); }
