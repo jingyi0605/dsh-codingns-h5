@@ -58,7 +58,7 @@ function renderLogin(errorMessage = "") {
       <button class="cyber-submit" type="submit"><span class="cyber-submit-glow"></span><span class="cyber-submit-border"></span><span class="cyber-submit-text"><span class="cyber-submit-icon" aria-hidden="true">➤</span>登录 DSH Web</span></button>
       <div class="cyber-footer">
         <div class="cyber-divider"><span class="cyber-divider-line"></span><span class="cyber-divider-text">CONNECT</span><span class="cyber-divider-line"></span></div>
-        <div class="cyber-links"><a href="https://channel.codingns.com" target="_blank" rel="noopener noreferrer">注册 CodingNS Connect 账号</a><a href="https://github.com/jingyi0605/DSH-CodingNS" target="_blank" rel="noopener noreferrer">GitHub 项目仓库</a></div>
+        <div class="cyber-links"><a href="https://channel.codingns.com:1443" target="_blank" rel="noopener noreferrer">注册 CodingNS Connect 账号</a><a href="https://github.com/jingyi0605/DSH-CodingNS" target="_blank" rel="noopener noreferrer">GitHub 项目仓库</a></div>
       </div>
     </form>
   `;
