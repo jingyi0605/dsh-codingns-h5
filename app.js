@@ -160,6 +160,7 @@ function deviceCard(device) {
 async function startBootstrap(deviceId) {
   const status = document.querySelector("#status");
   const buttons = [...document.querySelectorAll("[data-device-id]")];
+  stopDeviceStatusTimer();
   buttons.forEach((button) => setBusy(button, true));
     status.textContent = "正在申请 Client ticket…";
   try {
