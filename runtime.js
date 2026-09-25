@@ -1442,7 +1442,16 @@
 				const raw = event.data;
 				if (typeof raw !== "string") return;
 				try {
-					if (JSON.parse(raw).type !== "registered") return;
+					const message = JSON.parse(raw);
+					if (message.type === "error") {
+						clearTimeout(timer);
+						remove();
+						const code = message.errorCode?.trim() || "RELAY_ERROR";
+						const detail = message.detail?.trim();
+						reject(/* @__PURE__ */ new Error(detail ? `Relay ${code}: ${detail}` : `Relay ${code}`));
+						return;
+					}
+					if (message.type !== "registered") return;
 					clearTimeout(timer);
 					remove();
 					resolve();
@@ -2581,7 +2590,8 @@
 		let stopped = false;
 		let reconnectTimer;
 		let reconnectRef;
-		const firstTicket = await options.controlApi.createClientTicket(device.dshDeviceId, signal);
+		const clientSessionId = options.clientSessionId?.trim() || void 0;
+		const firstTicket = await options.controlApi.createClientTicket(device.dshDeviceId, signal, clientSessionId);
 		options.onStatus?.("webrtc");
 		connection = await connectWebRtcClient(createWebRtcClientOptions(firstTicket, debug));
 		const hostScope = resolveDshHostScope(firstTicket);
@@ -2615,7 +2625,7 @@
 					const waitMs = Math.min(1e4, 500 * (attempt + 1));
 					if (attempt > 0) await delay(waitMs, signal);
 					options.onStatus?.("ticket");
-					const ticket = await options.controlApi.createClientTicket(device.dshDeviceId, signal);
+					const ticket = await options.controlApi.createClientTicket(device.dshDeviceId, signal, clientSessionId);
 					debug.log("bootstrap.reconnect.ticket", { generation: generation + 1 });
 					options.onStatus?.("webrtc");
 					const nextConnection = await connectWebRtcClient(createWebRtcClientOptions(ticket, debug));
@@ -2759,13 +2769,14 @@
 			async listDevices(signal) {
 				return requestJson(`${normalizedBaseUrl}/api/v1/dsh/devices`, signal === void 0 ? {} : { signal });
 			},
-			async createClientTicket(dshDeviceId, signal) {
+			async createClientTicket(dshDeviceId, signal, sessionId) {
 				return requestJson(`${normalizedBaseUrl}/api/v1/dsh/relay/ticket`, {
 					method: "POST",
 					...signal === void 0 ? {} : { signal },
 					body: {
 						dshDeviceId,
-						role: "client"
+						role: "client",
+						...sessionId?.trim() ? { sessionId: sessionId.trim() } : {}
 					}
 				});
 			}

@@ -141,6 +141,7 @@ async function startBootstrap(deviceId) {
     activeRuntime = await api.startDshH5BrowserBootstrap({
       controlApi: api.createHttpDshH5ControlApi(controlApiBaseUrl),
       dshDeviceId: deviceId,
+      clientSessionId: getClientSessionId(deviceId),
       webContext: { container: app },
       onStatus: (phase) => {
         if (!status) return;
@@ -163,6 +164,20 @@ async function startBootstrap(deviceId) {
     status.className = "status error";
     status.textContent = error instanceof Error ? error.message : "申请 ticket 失败";
   }
+}
+
+// Relay 每个设备默认只允许一个 Client。固定浏览器会话标识后，刷新页面会
+// 让 Relay 用同一 sessionId 顶掉没有及时收到 pagehide 的旧连接，而不是被
+// 误判为第二个并返回 TOO_MANY_CLIENTS。
+function getClientSessionId(deviceId) {
+  const key = `dsh-codingns.h5.client-session.${deviceId}`;
+  const saved = sessionStorage.getItem(key);
+  if (saved) return saved;
+  const generated = typeof crypto?.randomUUID === "function"
+    ? `h5_${crypto.randomUUID()}`
+    : `h5_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
+  sessionStorage.setItem(key, generated);
+  return generated;
 }
 
 async function request(pathname, options = {}) {
