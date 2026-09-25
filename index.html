@@ -3,24 +3,35 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content="DSH-CodingNS 远程访问引导" />
-    <title>DSH-CodingNS 远程访问</title>
-    <link rel="stylesheet" href="./styles.css" />
+    <meta name="description" content="DSH Web 远程访问" />
+    <title>DSH Web | CodingNS</title>
+    <link rel="stylesheet" href="./styles.css?v=20260925-0915" />
   </head>
   <body>
-    <main class="shell">
-      <section class="brand-block">
-        <p class="eyebrow">DSH-CODINGNS</p>
-        <h1>远程 DSH</h1>
-        <p class="summary">登录控制站，选择在线设备，然后进入该设备自己的 DSH Web 环境。</p>
-      </section>
-
-      <section id="app" class="panel" aria-live="polite">
-        <p class="muted">正在加载引导服务…</p>
-      </section>
+    <main class="cyber-login-page" data-theme="dark">
+      <div class="cyber-bg" aria-hidden="true">
+        <div class="cyber-grid"></div>
+        <div class="cyber-glow cyber-glow-1"></div>
+        <div class="cyber-glow cyber-glow-2"></div>
+        <canvas class="particle-canvas"></canvas>
+      </div>
+      <div class="scanlines" aria-hidden="true"></div>
+      <div class="cyber-login-container">
+        <div class="cyber-login-content">
+          <div class="cyber-brand">
+            <div class="cyber-logo"><img src="./logo.svg" alt="DSH Web" class="cyber-logo-svg" /></div>
+            <h1 class="cyber-brand-title"><span class="glitch-text" data-text="DSH Web">DSH Web</span></h1>
+            <p class="cyber-brand-subtitle"><span class="typewriter-text">SECURE REMOTE DSH ENVIRONMENT<span class="typewriter-cursor">_</span></span></p>
+          </div>
+          <div id="app" class="cyber-card" aria-live="polite">
+            <p class="cyber-connect-hint">正在加载引导服务…</p>
+          </div>
+        </div>
+        <div class="cyber-version"><span class="cyber-version-text">DSH-CODINGNS</span><span class="cyber-version-divider">|</span><span class="cyber-version-text">SYSTEM READY</span></div>
+      </div>
     </main>
     <script src="./config.js"></script>
     <script src="./runtime.js?v=20260925-0819"></script>
-    <script type="module" src="./app.js?v=20260924-2140"></script>
+    <script type="module" src="./app.js?v=20260925-0915"></script>
   </body>
 </html>

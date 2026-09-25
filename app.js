@@ -1,6 +1,7 @@
 const config = window.__DSH_BOOTSTRAP_CONFIG__ ?? {};
 const controlApiBaseUrl = String(config.controlApiBaseUrl ?? "").replace(/\/+$/, "");
 const sessionStorageKey = "dsh-codingns.h5.session";
+const activeDeviceStorageKey = "dsh-codingns.h5.active-device";
 const app = document.querySelector("#app");
 
 let session = readSession();
@@ -33,15 +34,27 @@ function render() {
 function renderLogin(errorMessage = "") {
   setRemoteWebMode(false);
   app.innerHTML = `
-    <form class="form" id="login-form">
-      <div>
-        <h2>登录控制站</h2>
-        <p class="muted">使用控制站 HttpOnly 会话，不把 access token 或 refresh token 放进页面存储。</p>
+    <form class="cyber-form" id="login-form">
+      <div class="cyber-card-header-wrap">
+        <div class="cyber-card-header"><div class="cyber-line"></div><span class="cyber-card-label">DSH WEB ACCESS</span><div class="cyber-line"></div></div>
       </div>
-      <label>邮箱<input name="email" type="email" autocomplete="email" required /></label>
-      <label>密码<input name="password" type="password" autocomplete="current-password" required /></label>
-      ${errorMessage ? `<p class="error">${escapeHtml(errorMessage)}</p>` : ""}
-      <button class="primary" type="submit">登录并读取 DSH 设备</button>
+      <p class="cyber-connect-hint">使用 CodingNS Connect 账号登录，随后进入在线设备自己的 DSH Web。</p>
+      <div class="cyber-field">
+        <div class="cyber-field-border"><div class="cyber-field-border-glow"></div></div>
+        <label class="cyber-field-label" for="login-email"><span class="cyber-field-icon" aria-hidden="true">✉</span>邮箱</label>
+        <input class="cyber-input" id="login-email" name="email" type="email" autocomplete="email" placeholder="输入 Connect 邮箱" required />
+      </div>
+      <div class="cyber-field">
+        <div class="cyber-field-border"><div class="cyber-field-border-glow"></div></div>
+        <label class="cyber-field-label" for="login-password"><span class="cyber-field-icon" aria-hidden="true">⚷</span>密码</label>
+        <input class="cyber-input" id="login-password" name="password" type="password" autocomplete="current-password" placeholder="输入账号密码" required />
+      </div>
+      ${errorMessage ? `<p class="error cyber-status" role="alert"><span class="cyber-status-icon">⚠</span><span>${escapeHtml(errorMessage)}</span></p>` : ""}
+      <button class="cyber-submit" type="submit"><span class="cyber-submit-glow"></span><span class="cyber-submit-border"></span><span class="cyber-submit-text"><span class="cyber-submit-icon" aria-hidden="true">➤</span>登录 DSH Web</span></button>
+      <div class="cyber-footer">
+        <div class="cyber-divider"><span class="cyber-divider-line"></span><span class="cyber-divider-text">CONNECT</span><span class="cyber-divider-line"></span></div>
+        <div class="cyber-links"><a href="https://channel.codingns.com" target="_blank" rel="noopener noreferrer">注册 CodingNS Connect 账号</a><a href="https://github.com/jingyi0605/DSH-CodingNS" target="_blank" rel="noopener noreferrer">GitHub 项目仓库</a></div>
+      </div>
     </form>
   `;
 
@@ -97,15 +110,22 @@ async function renderDevices() {
       await request("/api/public/auth/h5/logout", { method: "POST" }).catch(() => undefined);
       session = null;
       sessionStorage.removeItem(sessionStorageKey);
+      sessionStorage.removeItem(activeDeviceStorageKey);
       render();
     });
     for (const button of document.querySelectorAll("[data-device-id]")) {
       button.addEventListener("click", () => startBootstrap(button.dataset.deviceId));
     }
+    const rememberedDeviceId = sessionStorage.getItem(activeDeviceStorageKey);
+    if (rememberedDeviceId && online.some((device) => device.dshDeviceId === rememberedDeviceId)) {
+      // 让设备列表先完成挂载，再启动自动恢复，确保状态节点可更新。
+      queueMicrotask(() => startBootstrap(rememberedDeviceId));
+    }
   } catch (error) {
     if (error instanceof ApiError && error.status === 401) {
       session = null;
       sessionStorage.removeItem(sessionStorageKey);
+      sessionStorage.removeItem(activeDeviceStorageKey);
       renderLogin("登录已过期，请重新登录");
       return;
     }
@@ -154,12 +174,14 @@ async function startBootstrap(deviceId) {
               : "正在读取远程 DSH Web…";
       },
     });
+    sessionStorage.setItem(activeDeviceStorageKey, deviceId);
     setRemoteWebMode(true);
     window.dispatchEvent(new CustomEvent("dsh-bootstrap-ready", { detail: { deviceId, runtime: activeRuntime } }));
   } catch (error) {
     await activeRuntime?.dispose().catch(() => undefined);
     activeRuntime = null;
     setRemoteWebMode(false);
+    sessionStorage.removeItem(activeDeviceStorageKey);
     buttons.forEach((button) => setBusy(button, false));
     status.className = "status error";
     status.textContent = error instanceof Error ? error.message : "申请 ticket 失败";
