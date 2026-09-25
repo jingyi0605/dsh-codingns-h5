@@ -159,6 +159,8 @@ body.remote-web-mode #app > iframe {
 @keyframes dsh-scanline { to { transform: translateY(4px); } }
 .cyber-login-container { position: relative; z-index: 2; display: flex; flex-direction: column; align-items: center; gap: 30px; width: min(440px, calc(100% - 32px)); padding: 24px; }
 .cyber-login-content { display: flex; flex-direction: column; align-items: center; gap: 28px; width: 100%; }
+body.dsh-device-list-mode .cyber-login-container { width: min(680px, calc(100% - 32px)); max-width: 680px; }
+body.dsh-device-list-mode .cyber-card { padding-left: 40px; padding-right: 40px; }
 .cyber-brand { display: flex; flex-direction: column; align-items: center; gap: 13px; text-align: center; }
 .cyber-logo { position: relative; width: 80px; height: 80px; display: grid; place-items: center; }
 .cyber-logo-svg { width: 72px; height: 72px; filter: drop-shadow(0 0 14px rgba(0,212,255,.7)); animation: dsh-logo-pulse 2s ease-in-out infinite; }
@@ -208,16 +210,17 @@ body.remote-web-mode #app > iframe {
 .panel-heading .eyebrow { margin: 0; color: var(--cyber-text-dim); font-size: 11px; letter-spacing: 1px; }
 .quiet { min-height: 32px; padding: 0 10px; border: 1px solid var(--cyber-border); border-radius: 6px; background: transparent; color: var(--cyber-text-dim); }
 .device-list { display: grid; gap: 10px; }
-.device-card { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px; border: 1px solid var(--cyber-border-dim); border-radius: 8px; background: var(--cyber-bg-input); }
+.device-card { display: flex; align-items: center; justify-content: space-between; gap: 20px; min-width: 0; padding: 14px; border: 1px solid var(--cyber-border-dim); border-radius: 8px; background: var(--cyber-bg-input); }
+.device-card > div:first-child { min-width: 0; flex: 1 1 auto; }
 .device-card__title { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .device-card h3 { margin: 0; font-size: 15px; }
 .device-status-dot { width: 9px; height: 9px; flex: 0 0 9px; border-radius: 50%; background: #ef4444; box-shadow: 0 0 0 3px rgba(239, 68, 68, .12); }
 .device-card[data-online="true"] .device-status-dot { background: #10b981; box-shadow: 0 0 0 3px rgba(16, 185, 129, .14), 0 0 12px rgba(16, 185, 129, .45); animation: dsh-status-pulse 2s ease-in-out infinite; }
-.device-status-label { color: var(--cyber-text-dim); font-size: 11px; letter-spacing: .06em; }
+.device-status-label { color: var(--cyber-text-dim); font-size: 11px; letter-spacing: .06em; white-space: nowrap; }
 .device-card[data-online="true"] .device-status-label { color: #10b981; }
 @keyframes dsh-status-pulse { 50% { opacity: .55; } }
 .device-card p { margin: 0; }
-.device-card .primary { min-height: 36px; padding: 0 14px; border: 1px solid var(--cyber-border-strong); border-radius: 6px; background: linear-gradient(135deg, var(--cyber-primary), var(--cyber-accent)); color: white; }
+.device-card .primary { flex: 0 0 auto; min-width: 88px; min-height: 36px; padding: 0 14px; border: 1px solid var(--cyber-border-strong); border-radius: 6px; background: linear-gradient(135deg, var(--cyber-primary), var(--cyber-accent)); color: white; white-space: nowrap; word-break: keep-all; }
 .device-card .primary:disabled { border-color: var(--cyber-border-dim); background: var(--cyber-bg-hover); color: var(--cyber-text-muted); cursor: not-allowed; opacity: .8; }
 .loading, .empty { color: var(--cyber-text-dim); }
 .status { min-height: 1.6em; margin: 16px 0 0; }
@@ -229,6 +232,8 @@ body.remote-web-mode #app { border: 0; border-radius: 0; background: #101216; bo
 body.remote-web-mode #app > iframe { display: block; width: 100%; height: 100%; min-height: 100vh; border: 0; }
 @media (max-width: 520px) {
   .cyber-login-container { width: 100%; padding: 20px 16px; }
+  body.dsh-device-list-mode .cyber-login-container { width: 100%; }
+  body.dsh-device-list-mode .cyber-card { padding-left: 20px; padding-right: 20px; }
   .cyber-card { padding: 24px 20px; }
   .cyber-brand-subtitle { font-size: 10px; letter-spacing: 1px; }
   .device-card { align-items: stretch; flex-direction: column; }

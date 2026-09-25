@@ -25,6 +25,7 @@ function setRemoteWebMode(enabled) {
 
 function render() {
   stopDeviceStatusTimer();
+  document.body.classList.remove("dsh-device-list-mode");
   setRemoteWebMode(false);
   if (!session) {
     renderLogin();
@@ -35,6 +36,7 @@ function render() {
 }
 
 function renderLogin(errorMessage = "") {
+  document.body.classList.remove("dsh-device-list-mode");
   setRemoteWebMode(false);
   app.innerHTML = `
     <form class="cyber-form" id="login-form">
@@ -88,6 +90,7 @@ function renderLogin(errorMessage = "") {
 
 async function renderDevices() {
   stopDeviceStatusTimer();
+  document.body.classList.add("dsh-device-list-mode");
   setRemoteWebMode(false);
   app.innerHTML = `
     <div class="loading"><span class="spinner"></span><span>读取 DSH 设备…</span></div>
