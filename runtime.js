@@ -1,4 +1,49 @@
 (function() {
+	//#region src/shared/contracts/version.ts
+	/** 当前经过完整验证的 DSH 版本；源文件由根目录 version.json 同步。 */
+	const DSH_VERSION = "0.1.6-alpha.2";
+	/** 插件支持的 DSH 版本范围；插件版本与宿主版本独立发布。 */
+	const DSH_COMPATIBILITY = ">=0.1.5-rc.3 <0.1.8-0";
+	/** 判断宿主版本是否落在当前插件声明的 DSH 兼容范围内。 */
+	function isDshVersionCompatible(version) {
+		const match = /^>=([^ ]+) <([^ ]+)$/u.exec(DSH_COMPATIBILITY);
+		const actual = parseVersion(version);
+		const minimum = parseVersion(match?.[1] ?? "");
+		const maximum = parseVersion(match?.[2] ?? "");
+		if (!actual || !minimum || !maximum) return version === DSH_VERSION;
+		if (actual.major === maximum.major && actual.minor === maximum.minor && actual.patch === maximum.patch && actual.prerelease.length > 0) return false;
+		return compareVersions(actual, minimum) >= 0 && compareVersions(actual, maximum) < 0;
+	}
+	function parseVersion(value) {
+		const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/u.exec(value);
+		if (!match) return void 0;
+		return {
+			major: Number(match[1]),
+			minor: Number(match[2]),
+			patch: Number(match[3]),
+			prerelease: match[4] === void 0 ? [] : match[4].split(".").map((part) => /^\d+$/u.test(part) ? Number(part) : part)
+		};
+	}
+	function compareVersions(left, right) {
+		for (const key of [
+			"major",
+			"minor",
+			"patch"
+		]) if (left[key] !== right[key]) return left[key] - right[key];
+		if (left.prerelease.length === 0 && right.prerelease.length > 0) return 1;
+		if (left.prerelease.length > 0 && right.prerelease.length === 0) return -1;
+		for (let index = 0; index < Math.max(left.prerelease.length, right.prerelease.length); index += 1) {
+			const leftPart = left.prerelease[index];
+			const rightPart = right.prerelease[index];
+			if (leftPart === void 0) return -1;
+			if (rightPart === void 0) return 1;
+			if (leftPart === rightPart) continue;
+			if (typeof leftPart === "number" && typeof rightPart === "string") return -1;
+			if (typeof leftPart === "string" && typeof rightPart === "number") return 1;
+			return leftPart < rightPart ? -1 : 1;
+		}
+		return 0;
+	}
 	const MAGIC = new Uint8Array([
 		68,
 		83,
@@ -98,14 +143,14 @@
 	}
 	//#endregion
 	//#region src/transport/debug.ts
-	const DEBUG_ENV = "DSH_CODINGNS_TUNNEL_DEBUG";
+	const DEBUG_ENV = "CODINGNS4DSH_TUNNEL_DEBUG";
 	/** 创建一个可注入测试 sink 的调试 logger。默认开关由当前运行环境决定。 */
 	function createDshTransportDebugLogger(options = {}) {
 		const enabled = options.enabled ?? resolveDshTransportDebugEnabled();
 		const side = options.side ?? "unknown";
 		const component = options.component ?? "transport";
 		const sink = options.sink ?? ((record) => {
-			console.info("[dsh-codingns:tunnel]", record);
+			console.info("[codingns4dsh:tunnel]", record);
 		});
 		return {
 			enabled,
@@ -123,14 +168,14 @@
 	}
 	/** 解析 Host 环境变量、H5 URL/localStorage 和调试全局变量。 */
 	function resolveDshTransportDebugEnabled() {
-		const globalValue = globalThis.__DSH_CODINGNS_TUNNEL_DEBUG__;
+		const globalValue = globalThis.__CODINGNS4DSH_TUNNEL_DEBUG__;
 		if (globalValue !== void 0) return parseDebugValue(globalValue);
 		if (typeof location !== "undefined") {
 			const queryValue = new URL(location.href).searchParams.get("dshDebug");
 			if (queryValue !== null) return parseDebugValue(queryValue);
 		}
 		if (typeof localStorage !== "undefined") try {
-			const stored = localStorage.getItem("dsh-codingns-tunnel-debug");
+			const stored = localStorage.getItem("codingns4dsh-tunnel-debug");
 			if (stored !== null) return parseDebugValue(stored);
 		} catch {}
 		if (typeof process !== "undefined") return parseDebugValue(process.env[DEBUG_ENV]);
@@ -795,7 +840,7 @@
 				}
 				const protocol = envelope.meta.protocol;
 				const dshVersion = envelope.meta.dshVersion;
-				if (protocol !== (this.options.protocol ?? "dsh-transport-v1") || dshVersion !== (this.options.dshVersion ?? "0.1.6-alpha.2")) {
+				if (protocol !== (this.options.protocol ?? "dsh-transport-v1") || typeof dshVersion !== "string" || !isDshVersionCompatible(dshVersion)) {
 					this.fail(/* @__PURE__ */ new Error("PROTOCOL_VERSION_UNSUPPORTED"));
 					return;
 				}
@@ -819,7 +864,7 @@
 				}
 				const protocol = envelope.meta.protocol;
 				const dshVersion = envelope.meta.dshVersion;
-				if (protocol !== (this.options.protocol ?? "dsh-transport-v1") || dshVersion !== (this.options.dshVersion ?? "0.1.6-alpha.2")) {
+				if (protocol !== (this.options.protocol ?? "dsh-transport-v1") || typeof dshVersion !== "string" || !isDshVersionCompatible(dshVersion)) {
 					this.fail(/* @__PURE__ */ new Error("PROTOCOL_VERSION_UNSUPPORTED"));
 					return;
 				}
@@ -1156,7 +1201,7 @@
 		};
 		const sendPhysical = async (data) => {
 			await waitOpen();
-			if (state !== "open") throw new Error("CodingNS DataChannel 尚未 ready");
+			if (state !== "open") throw new Error("Codingns4DSH DataChannel 尚未 ready");
 			await waitBackpressure();
 			channel.send(data);
 			logger.log("carrier.send", {
@@ -1639,7 +1684,7 @@
 		async open(signal) {
 			this.ensureOpen();
 			window.addEventListener("message", this.onMessageBound);
-			window.__DSH_CODINGNS_REMOTE_TRANSPORT__ = this.options.transport;
+			window.__CODINGNS4DSH_REMOTE_TRANSPORT__ = this.options.transport;
 			const session = await this.options.transport.webRequest("web.session.open", {
 				...this.options.workspaceId ? { workspaceId: this.options.workspaceId } : {},
 				...this.options.sessionId ? { sessionId: this.options.sessionId } : {}
@@ -1678,7 +1723,7 @@
 			this.iframeValue?.remove();
 			this.iframeValue = void 0;
 			const transportWindow = window;
-			if (transportWindow.__DSH_CODINGNS_REMOTE_TRANSPORT__ === this.options.transport) delete transportWindow.__DSH_CODINGNS_REMOTE_TRANSPORT__;
+			if (transportWindow.__CODINGNS4DSH_REMOTE_TRANSPORT__ === this.options.transport) delete transportWindow.__CODINGNS4DSH_REMOTE_TRANSPORT__;
 			this.sessionIdValue = void 0;
 		}
 		async prepareBootHtml(boot, signal) {
@@ -2001,11 +2046,11 @@
 	};
 	function createBridgeScript() {
 		return `(() => {
-    // 远程 DSH Web 已经运行在外层 DSH-CodingNS Tunnel 内。
-    // 内嵌的 dsh-codingns Client 仍需加载其插件代码和界面，但不能再次启动
+    // 远程 DSH Web 已经运行在外层 Codingns4DSH Tunnel 内。
+    // 内嵌的 codingns4dsh Client 仍需加载其插件代码和界面，但不能再次启动
     // 自己的 Relay/WebRTC，否则会把信令 WebSocket 当成本地 DSH Web 路径转发，
     // 形成递归连接并持续触发 /signaling/signal 失败。
-    globalThis.__DSH_CODINGNS_REMOTE_WEB_CONTEXT__ = true;
+    globalThis.__CODINGNS4DSH_REMOTE_WEB_CONTEXT__ = true;
     const bridgeDebugEnabled = (() => {
       try {
         const query = new URL(parent.location.href).searchParams.get('dshDebug');
@@ -2015,7 +2060,7 @@
     const bridgeLog = (event, fields = {}) => {
       if (!bridgeDebugEnabled) return;
       const payload = { at: new Date().toISOString(), side: 'h5', component: 'remote-web-bridge', event, ...fields };
-      console.info('[dsh-codingns:tunnel]', payload);
+      console.info('[codingns4dsh:tunnel]', payload);
       parent.postMessage({ kind: 'dsh-web-debug', event, fields: payload }, '*');
     };
     const pending = new Map();
@@ -2064,7 +2109,7 @@
         if (beforeNode) nativeInsertBefore.call(parentNode, node, beforeNode);
         else nativeAppendChild.call(parentNode, node);
       }).catch((error) => {
-        console.error('[dsh-codingns] remote resource load failed', error);
+        console.error('[codingns4dsh] remote resource load failed', error);
         try {
           if (typeof onerror === 'function') onerror.call(node, error);
           else node.dispatchEvent(new Event('error'));
@@ -2453,18 +2498,21 @@
       })();
     };
     const parentTransport = (() => {
-      try { return parent.__DSH_CODINGNS_REMOTE_TRANSPORT__; } catch { return undefined; }
+      try { return parent.__CODINGNS4DSH_REMOTE_TRANSPORT__; } catch { return undefined; }
     })();
     globalThis.__DSH_TRANSPORT__ = {
       fetch: window.fetch.bind(window),
       openStream: openRemoteStream,
-      ownsHost: false,
+      // 该 iframe 的所有 DSH 请求都经由已认证的 Codingns4DSH 隧道回到选定 Host。
+      // 必须声明 Host 所有权，否则 ui-settings 会把远程页面降级为 memory
+      // 模式，原生“模型”页无法读取 settings provider。
+      ownsHost: true,
       generation: parentTransport?.getGeneration?.bind(parentTransport),
       onGenerationChange: parentTransport?.onGenerationChange?.bind(parentTransport),
       reconnect: parentTransport?.reconnect?.bind(parentTransport),
       close: parentTransport?.close?.bind(parentTransport),
     };
-    globalThis.__DSH_CODINGNS_DEBUG__ = (event, fields = {}) => {
+    globalThis.__CODINGNS4DSH_DEBUG__ = (event, fields = {}) => {
       bridgeLog('client.' + String(event), fields);
     };
     const NativeEventSource = globalThis.EventSource;
