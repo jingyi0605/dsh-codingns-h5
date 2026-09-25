@@ -1,7 +1,7 @@
 const config = window.__DSH_BOOTSTRAP_CONFIG__ ?? {};
 const controlApiBaseUrl = String(config.controlApiBaseUrl ?? "").replace(/\/+$/, "");
-const sessionStorageKey = "dsh-codingns.h5.session";
-const activeDeviceStorageKey = "dsh-codingns.h5.active-device";
+const sessionStorageKey = "codingns4dsh.h5.session";
+const activeDeviceStorageKey = "codingns4dsh.h5.active-device";
 const app = document.querySelector("#app");
 
 let session = readSession();
@@ -43,7 +43,7 @@ function renderLogin(errorMessage = "") {
       <div class="cyber-card-header-wrap">
         <div class="cyber-card-header"><div class="cyber-line"></div><span class="cyber-card-label">DSH WEB ACCESS</span><div class="cyber-line"></div></div>
       </div>
-      <p class="cyber-connect-hint">使用 CodingNS Connect 账号登录，随后进入在线设备自己的 DSH Web。</p>
+      <p class="cyber-connect-hint">使用 Codingns4DSH Connect 账号登录，随后进入在线设备自己的 DSH Web。</p>
       <div class="cyber-field">
         <div class="cyber-field-border"><div class="cyber-field-border-glow"></div></div>
         <label class="cyber-field-label" for="login-email"><span class="cyber-field-icon" aria-hidden="true">✉</span>邮箱</label>
@@ -58,7 +58,7 @@ function renderLogin(errorMessage = "") {
       <button class="cyber-submit" type="submit"><span class="cyber-submit-glow"></span><span class="cyber-submit-border"></span><span class="cyber-submit-text"><span class="cyber-submit-icon" aria-hidden="true">➤</span>登录 DSH Web</span></button>
       <div class="cyber-footer">
         <div class="cyber-divider"><span class="cyber-divider-line"></span><span class="cyber-divider-text">CONNECT</span><span class="cyber-divider-line"></span></div>
-        <div class="cyber-links"><a href="https://channel.codingns.com:1443" target="_blank" rel="noopener noreferrer">注册 CodingNS Connect 账号</a><a href="https://github.com/jingyi0605/DSH-CodingNS" target="_blank" rel="noopener noreferrer">GitHub 项目仓库</a></div>
+        <div class="cyber-links"><a href="https://channel.codingns.com:1443" target="_blank" rel="noopener noreferrer">注册 Codingns4DSH Connect 账号</a><a href="https://github.com/jingyi0605/Codingns4DSH" target="_blank" rel="noopener noreferrer">GitHub 项目仓库</a></div>
       </div>
     </form>
   `;
@@ -153,6 +153,7 @@ function deviceCard(device) {
       <div>
         <div class="device-card__title"><span class="device-status-dot" aria-hidden="true"></span><h3>${name}</h3><span class="device-status-label">${online ? "在线" : "离线"}</span></div>
         <p class="mono">${id}</p>
+        <p class="muted device-details">版本：${escapeHtml(device.dshVersion || "未知")} · 计算机名：${escapeHtml(device.computerName || "未知")}</p>
         <p class="muted device-heartbeat" data-heartbeat="${heartbeat}" data-online="${online ? "true" : "false"}">${formatDevicePresence(device)}</p>
       </div>
       <button class="primary" data-device-id="${id}" type="button" ${online ? "" : "disabled"}>${online ? "连接" : "不可用"}</button>
@@ -303,7 +304,7 @@ function startParticleField() {
 // 让 Relay 用同一 sessionId 顶掉没有及时收到 pagehide 的旧连接，而不是被
 // 误判为第二个并返回 TOO_MANY_CLIENTS。
 function getClientSessionId(deviceId) {
-  const key = `dsh-codingns.h5.client-session.${deviceId}`;
+  const key = `codingns4dsh.h5.client-session.${deviceId}`;
   const saved = sessionStorage.getItem(key);
   if (saved) return saved;
   const generated = typeof crypto?.randomUUID === "function"

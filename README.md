@@ -1,4 +1,4 @@
-# DSH-CodingNS H5 Bootstrap
+# Codingns4DSH H5 Bootstrap
 
 这是一个独立的静态 H5 引导项目，适合部署到 Vercel、Cloudflare Pages 或任意静态 CDN。它不运行 Host、Relay、TURN，也不在边缘函数中执行 WebRTC；WebRTC 和 DataChannel 必须在访问者浏览器中运行。
 
@@ -37,7 +37,7 @@ Cloudflare Worker 可以作为反向代理或注入运行时配置，但不应�
 调试日志默认关闭。H5 临时启用方式：
 
 - 在地址后增加 `?dshDebug=1`，例如 `https://dsh.codingns.com/?dshDebug=1`；
-- 或在浏览器控制台执行 `localStorage.setItem('dsh-codingns-tunnel-debug', '1')`，刷新页面；
-- 停用时执行 `localStorage.removeItem('dsh-codingns-tunnel-debug')`，或使用 `?dshDebug=0`。
+- 或在浏览器控制台执行 `localStorage.setItem('codingns4dsh-tunnel-debug', '1')`，刷新页面；
+- 停用时执行 `localStorage.removeItem('codingns4dsh-tunnel-debug')`，或使用 `?dshDebug=0`。
 
 日志只输出信令、DataChannel、Session、Envelope 和 Remote Web 请求的元数据，不输出 Envelope body、ticket、Cookie 或 DSH Web 响应正文。
