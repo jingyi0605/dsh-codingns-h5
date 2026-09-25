@@ -6,6 +6,7 @@ const app = document.querySelector("#app");
 
 let session = readSession();
 let activeRuntime = null;
+let deviceStatusTimer = null;
 
 // 页面刷新或关闭时必须释放 WebRTC、信令和 iframe WebSocket，避免 Relay 房间
 // 长时间保留旧 Client，最终触发 TOO_MANY_CLIENTS 并污染下一次联调。
@@ -15,6 +16,7 @@ window.addEventListener("pagehide", () => {
   void runtime?.dispose().catch(() => undefined);
 });
 
+startParticleField();
 render();
 
 function setRemoteWebMode(enabled) {
@@ -22,6 +24,7 @@ function setRemoteWebMode(enabled) {
 }
 
 function render() {
+  stopDeviceStatusTimer();
   setRemoteWebMode(false);
   if (!session) {
     renderLogin();
@@ -84,6 +87,7 @@ function renderLogin(errorMessage = "") {
 }
 
 async function renderDevices() {
+  stopDeviceStatusTimer();
   setRemoteWebMode(false);
   app.innerHTML = `
     <div class="loading"><span class="spinner"></span><span>读取 DSH 设备…</span></div>
@@ -92,7 +96,8 @@ async function renderDevices() {
   try {
     const response = await request("/api/v1/dsh/devices");
     const devices = Array.isArray(response.devices) ? response.devices : [];
-    const online = devices.filter((device) => device.status === "active" && device.online);
+    // 控制站会返回账号下全部 DSH 设备；离线设备保留在列表中，避免用户误以为设备已被删除。
+    const visibleDevices = devices.filter((device) => device.status === "active" || device.status === "disabled");
     app.innerHTML = `
       <div class="panel-heading">
         <div>
@@ -101,7 +106,7 @@ async function renderDevices() {
         </div>
         <button class="quiet" id="logout" type="button">退出</button>
       </div>
-      ${online.length === 0 ? `<p class="empty">当前没有在线的 DSH Host。</p>` : `<div class="device-list">${online.map(deviceCard).join("")}</div>`}
+      ${visibleDevices.length === 0 ? `<p class="empty">当前没有已注册的 DSH Host。</p>` : `<div class="device-list">${visibleDevices.map(deviceCard).join("")}</div>`}
       <p id="status" class="muted status" role="status"></p>
     `;
     document.querySelector("#logout").addEventListener("click", async () => {
@@ -116,8 +121,10 @@ async function renderDevices() {
     for (const button of document.querySelectorAll("[data-device-id]")) {
       button.addEventListener("click", () => startBootstrap(button.dataset.deviceId));
     }
+    refreshDevicePresenceLabels();
+    deviceStatusTimer = window.setInterval(refreshDevicePresenceLabels, 1000);
     const rememberedDeviceId = sessionStorage.getItem(activeDeviceStorageKey);
-    if (rememberedDeviceId && online.some((device) => device.dshDeviceId === rememberedDeviceId)) {
+    if (rememberedDeviceId && visibleDevices.some((device) => device.dshDeviceId === rememberedDeviceId && device.online)) {
       // 让设备列表先完成挂载，再启动自动恢复，确保状态节点可更新。
       queueMicrotask(() => startBootstrap(rememberedDeviceId));
     }
@@ -136,15 +143,16 @@ async function renderDevices() {
 function deviceCard(device) {
   const id = escapeHtml(device.dshDeviceId);
   const name = escapeHtml(device.displayName || device.dshDeviceId);
-  const heartbeat = device.lastHeartbeatAt ? new Date(device.lastHeartbeatAt).toLocaleString() : "未知";
+  const heartbeat = escapeHtml(device.lastHeartbeatAt ?? "");
+  const online = device.status === "active" && device.online;
   return `
-    <article class="device-card">
+    <article class="device-card" data-status="${escapeHtml(device.status)}" data-online="${online ? "true" : "false"}">
       <div>
-        <h3>${name}</h3>
+        <div class="device-card__title"><span class="device-status-dot" aria-hidden="true"></span><h3>${name}</h3><span class="device-status-label">${online ? "在线" : "离线"}</span></div>
         <p class="mono">${id}</p>
-        <p class="muted">最后心跳：${escapeHtml(heartbeat)}</p>
+        <p class="muted device-heartbeat" data-heartbeat="${heartbeat}" data-online="${online ? "true" : "false"}">${formatDevicePresence(device)}</p>
       </div>
-      <button class="primary" data-device-id="${id}" type="button">连接</button>
+      <button class="primary" data-device-id="${id}" type="button" ${online ? "" : "disabled"}>${online ? "连接" : "不可用"}</button>
     </article>
   `;
 }
@@ -174,6 +182,7 @@ async function startBootstrap(deviceId) {
               : "正在读取远程 DSH Web…";
       },
     });
+    stopDeviceStatusTimer();
     sessionStorage.setItem(activeDeviceStorageKey, deviceId);
     setRemoteWebMode(true);
     window.dispatchEvent(new CustomEvent("dsh-bootstrap-ready", { detail: { deviceId, runtime: activeRuntime } }));
@@ -186,6 +195,104 @@ async function startBootstrap(deviceId) {
     status.className = "status error";
     status.textContent = error instanceof Error ? error.message : "申请 ticket 失败";
   }
+}
+
+function stopDeviceStatusTimer() {
+  if (deviceStatusTimer === null) return;
+  window.clearInterval(deviceStatusTimer);
+  deviceStatusTimer = null;
+}
+
+function refreshDevicePresenceLabels() {
+  for (const element of document.querySelectorAll("[data-heartbeat]")) {
+    const heartbeat = element.getAttribute("data-heartbeat") || "";
+    const card = element.closest(".device-card");
+    const active = card?.getAttribute("data-status") === "active";
+    const online = active && heartbeat !== "" && Date.now() - Date.parse(heartbeat) < 45_000;
+    card?.setAttribute("data-online", online ? "true" : "false");
+    element.setAttribute("data-online", online ? "true" : "false");
+    const label = card?.querySelector(".device-status-label");
+    if (label) label.textContent = online ? "在线" : "离线";
+    const button = card?.querySelector("[data-device-id]");
+    if (button instanceof HTMLButtonElement) {
+      button.disabled = !online;
+      button.textContent = online ? "连接" : "不可用";
+    }
+    element.textContent = formatDevicePresence({
+      online,
+      lastHeartbeatAt: heartbeat || null,
+    });
+  }
+}
+
+function formatDevicePresence(device) {
+  if (device.online) return device.lastHeartbeatAt ? `在线 · 最后心跳 ${formatElapsed(device.lastHeartbeatAt)}前` : "在线 · 等待首个心跳";
+  if (!device.lastHeartbeatAt) return "离线 · 从未连接";
+  return `离线 · ${formatElapsed(device.lastHeartbeatAt)}前`;
+}
+
+function formatElapsed(value) {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return "时间未知";
+  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainingSeconds = seconds % 60;
+  return `${hours}小时${minutes}分钟${remainingSeconds}秒`;
+}
+
+function startParticleField() {
+  const canvas = document.querySelector(".particle-canvas");
+  if (!(canvas instanceof HTMLCanvasElement)) return;
+  const context = canvas.getContext("2d");
+  if (!context) return;
+  let animationId = 0;
+  let particles = [];
+  const resize = () => {
+    const ratio = window.devicePixelRatio || 1;
+    canvas.width = Math.floor(window.innerWidth * ratio);
+    canvas.height = Math.floor(window.innerHeight * ratio);
+    canvas.style.width = `${window.innerWidth}px`;
+    canvas.style.height = `${window.innerHeight}px`;
+    context.setTransform(ratio, 0, 0, ratio, 0, 0);
+    particles = Array.from({ length: Math.min(50, Math.floor((window.innerWidth * window.innerHeight) / 25000)) }, () => ({
+      x: Math.random() * window.innerWidth,
+      y: Math.random() * window.innerHeight,
+      vx: (Math.random() - .5) * .5,
+      vy: (Math.random() - .5) * .5,
+      size: Math.random() * 2 + 1,
+      opacity: Math.random() * .5 + .2,
+    }));
+  };
+  const draw = () => {
+    context.clearRect(0, 0, window.innerWidth, window.innerHeight);
+    for (let index = 0; index < particles.length; index += 1) {
+      const particle = particles[index];
+      particle.x = (particle.x + particle.vx + window.innerWidth) % window.innerWidth;
+      particle.y = (particle.y + particle.vy + window.innerHeight) % window.innerHeight;
+      context.beginPath();
+      context.arc(particle.x, particle.y, particle.size, 0, Math.PI * 2);
+      context.fillStyle = `rgba(10, 132, 255, ${particle.opacity})`;
+      context.fill();
+      for (const other of particles.slice(index + 1)) {
+        const distance = Math.hypot(particle.x - other.x, particle.y - other.y);
+        if (distance >= 150) continue;
+        context.beginPath();
+        context.moveTo(particle.x, particle.y);
+        context.lineTo(other.x, other.y);
+        context.strokeStyle = `rgba(10, 132, 255, ${.1 * (1 - distance / 150)})`;
+        context.stroke();
+      }
+    }
+    animationId = window.requestAnimationFrame(draw);
+  };
+  resize();
+  draw();
+  window.addEventListener("resize", resize);
+  window.addEventListener("pagehide", () => {
+    window.removeEventListener("resize", resize);
+    window.cancelAnimationFrame(animationId);
+  }, { once: true });
 }
 
 // Relay 每个设备默认只允许一个 Client。固定浏览器会话标识后，刷新页面会

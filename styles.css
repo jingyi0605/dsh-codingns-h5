@@ -1,5 +1,5 @@
 :root {
-  color-scheme: dark;
+  color-scheme: light dark;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   background: #101216;
   color: #f4f5f7;
@@ -68,8 +68,8 @@ body.remote-web-mode #app > iframe {
   border: 0;
 }
 
-/* CodingNS 父仓库登录页的精简版 Cyberpunk 视觉。H5 只保留 Connect 登录，
-   因此不复制父仓库的登录方式切换和服务端设置。 */
+/* CodingNS 父仓库登录页的 Cyberpunk 视觉。H5 只保留 Connect 登录，
+   登录壳、字段、按钮、背景动画和响应式断点沿用同一套设计令牌。 */
 :root {
   --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
 }
@@ -97,6 +97,8 @@ body.remote-web-mode #app > iframe {
   --cyber-error-bg: rgba(239, 68, 68, .1);
   --cyber-error-border: rgba(239, 68, 68, .25);
   --cyber-shadow-card: 0 8px 32px rgba(0, 0, 0, .4), 0 0 0 1px var(--cyber-border);
+  --cyber-grid-color: rgba(59, 130, 246, .08);
+  --cyber-scanline: rgba(0, 0, 0, .15);
   position: fixed;
   inset: 0;
   display: flex;
@@ -107,10 +109,41 @@ body.remote-web-mode #app > iframe {
   background: radial-gradient(ellipse at center, var(--cyber-bg) 0%, var(--cyber-bg-deep) 100%);
   font-family: var(--font-mono);
 }
+
+/* 父仓库登录页支持亮色主题；H5 不保存主题偏好，直接跟随浏览器/系统设置。 */
+@media (prefers-color-scheme: light) {
+  .cyber-login-page[data-theme="system"] {
+    --cyber-bg: #f8fafc;
+    --cyber-bg-deep: #eef4fb;
+    --cyber-bg-card: rgba(255, 255, 255, .86);
+    --cyber-bg-input: rgba(241, 245, 249, .86);
+    --cyber-bg-hover: rgba(226, 232, 240, .7);
+    --cyber-primary: #2563eb;
+    --cyber-primary-dim: rgba(37, 99, 235, .4);
+    --cyber-primary-light: #2563eb;
+    --cyber-accent: #0891b2;
+    --cyber-glow: rgba(37, 99, 235, .2);
+    --cyber-glow-strong: rgba(37, 99, 235, .4);
+    --cyber-border: rgba(37, 99, 235, .22);
+    --cyber-border-strong: rgba(37, 99, 235, .38);
+    --cyber-border-dim: rgba(148, 163, 184, .45);
+    --cyber-text: #0f172a;
+    --cyber-text-secondary: #334155;
+    --cyber-text-dim: #64748b;
+    --cyber-text-muted: #94a3b8;
+    --cyber-error: #dc2626;
+    --cyber-error-bg: rgba(220, 38, 38, .08);
+    --cyber-error-border: rgba(220, 38, 38, .16);
+    --cyber-shadow-card: 0 8px 28px rgba(15, 23, 42, .12), 0 0 0 1px rgba(37, 99, 235, .13);
+    --cyber-grid-color: rgba(37, 99, 235, .06);
+    --cyber-scanline: rgba(0, 0, 0, .035);
+  }
+  body { background: #eef4fb; color: #0f172a; }
+}
 .cyber-bg, .scanlines { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
 .cyber-grid {
   position: absolute; inset: 0;
-  background-image: linear-gradient(rgba(59,130,246,.08) 1px, transparent 1px), linear-gradient(90deg, rgba(59,130,246,.08) 1px, transparent 1px);
+  background-image: linear-gradient(var(--cyber-grid-color) 1px, transparent 1px), linear-gradient(90deg, var(--cyber-grid-color) 1px, transparent 1px);
   background-size: 50px 50px;
   transform: perspective(500px) rotateX(60deg);
   transform-origin: center top;
@@ -122,7 +155,7 @@ body.remote-web-mode #app > iframe {
 .cyber-glow-2 { width: 300px; height: 300px; bottom: -50px; left: -50px; background: var(--cyber-accent); animation-delay: 2s; }
 @keyframes dsh-pulse { 50% { opacity: .42; transform: scale(1.1); } }
 .particle-canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
-.scanlines { background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,.15) 2px, rgba(0,0,0,.15) 4px); animation: dsh-scanline 8s linear infinite; }
+.scanlines { background: repeating-linear-gradient(0deg, transparent, transparent 2px, var(--cyber-scanline) 2px, var(--cyber-scanline) 4px); animation: dsh-scanline 8s linear infinite; }
 @keyframes dsh-scanline { to { transform: translateY(4px); } }
 .cyber-login-container { position: relative; z-index: 2; display: flex; flex-direction: column; align-items: center; gap: 30px; width: min(440px, calc(100% - 32px)); padding: 24px; }
 .cyber-login-content { display: flex; flex-direction: column; align-items: center; gap: 28px; width: 100%; }
@@ -176,9 +209,16 @@ body.remote-web-mode #app > iframe {
 .quiet { min-height: 32px; padding: 0 10px; border: 1px solid var(--cyber-border); border-radius: 6px; background: transparent; color: var(--cyber-text-dim); }
 .device-list { display: grid; gap: 10px; }
 .device-card { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px; border: 1px solid var(--cyber-border-dim); border-radius: 8px; background: var(--cyber-bg-input); }
-.device-card h3 { margin: 0 0 5px; font-size: 15px; }
+.device-card__title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.device-card h3 { margin: 0; font-size: 15px; }
+.device-status-dot { width: 9px; height: 9px; flex: 0 0 9px; border-radius: 50%; background: #ef4444; box-shadow: 0 0 0 3px rgba(239, 68, 68, .12); }
+.device-card[data-online="true"] .device-status-dot { background: #10b981; box-shadow: 0 0 0 3px rgba(16, 185, 129, .14), 0 0 12px rgba(16, 185, 129, .45); animation: dsh-status-pulse 2s ease-in-out infinite; }
+.device-status-label { color: var(--cyber-text-dim); font-size: 11px; letter-spacing: .06em; }
+.device-card[data-online="true"] .device-status-label { color: #10b981; }
+@keyframes dsh-status-pulse { 50% { opacity: .55; } }
 .device-card p { margin: 0; }
 .device-card .primary { min-height: 36px; padding: 0 14px; border: 1px solid var(--cyber-border-strong); border-radius: 6px; background: linear-gradient(135deg, var(--cyber-primary), var(--cyber-accent)); color: white; }
+.device-card .primary:disabled { border-color: var(--cyber-border-dim); background: var(--cyber-bg-hover); color: var(--cyber-text-muted); cursor: not-allowed; opacity: .8; }
 .loading, .empty { color: var(--cyber-text-dim); }
 .status { min-height: 1.6em; margin: 16px 0 0; }
 body.remote-web-mode .cyber-login-page { display: block; background: #101216; }
