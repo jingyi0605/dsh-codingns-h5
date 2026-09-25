@@ -11,7 +11,7 @@ let logoutInProgress = false;
 
 window.addEventListener("message", (event) => {
   const iframeWindow = activeRuntime?.webContext?.iframe?.contentWindow;
-  if (iframeWindow === null || iframeWindow === undefined || event.source !== iframeWindow || event.origin !== window.location.origin) return;
+  if (iframeWindow === null || iframeWindow === undefined || event.source !== iframeWindow) return;
   if (event.data?.kind !== "codingns4dsh:remote-logout") return;
   void logoutBrowserSession();
 });
