@@ -2140,12 +2140,34 @@
     const pending = new Map();
     // RPC、WebSocket 和远程 stream 必须使用各自的 ID 空间；资源 fetch
     // 不能改变 WebSocket 的 ID，否则 ws.open 与 ws.send 会指向不同 key。
+    //
+    // 每个 ID 还必须带 kind 前缀：早期实现把 fetch/script 计数器和 ws.open 计数器
+    // 当成裸数字放进同一个 pending Map，两个计数器各自从 1 开始，页面启动时
+    // 「插件包 fetch」与「/api/remote.mux ws.open」几乎同时发生，后到的
+    // pending.set 会覆盖先到的在途请求。被覆盖的那条 Promise 永远不会落地：
+    // 如果它正好是原生设置页的 settings/describe，DSH 的设置镜像会一直停在
+    // loading，中继下的「模型」页就永久空白且没有任何报错。
     let nextCallId = 0;
     let nextSocketId = 0;
     let nextStreamId = 0;
     let remoteLoadChain = Promise.resolve();
+    const allocateId = (prefix, counter) => {
+      let value = counter + 1;
+      let id = prefix + String(value);
+      // 绝不覆盖未完成的请求：万一同前缀 ID 仍在使用就继续往后取。
+      while (pending.has(id)) {
+        value += 1;
+        id = prefix + String(value);
+      }
+      return { id, counter: value };
+    };
     const call = (kind, input, body, explicitId) => new Promise((resolve, reject) => {
-      const id = explicitId || String(++nextCallId);
+      let id = explicitId;
+      if (id === undefined) {
+        const allocated = allocateId('req:', nextCallId);
+        nextCallId = allocated.counter;
+        id = allocated.id;
+      }
       pending.set(id, { resolve, reject });
       bridgeLog('bridge.call', { kind, id, path: input && typeof input.path === 'string' ? input.path : undefined });
       parent.postMessage({ kind, id, input, body }, '*');
@@ -2477,7 +2499,9 @@
         this.url = String(url);
         this.readyState = RemoteWebSocket.CONNECTING;
         this._listeners = new Map();
-        window.__dshRemoteSockets.set(this._id = String(++nextSocketId), this);
+        const allocated = allocateId('ws:', nextSocketId);
+        nextSocketId = allocated.counter;
+        window.__dshRemoteSockets.set(this._id = allocated.id, this);
         bridgeLog('bridge.ws.open', { id: this._id, path: new URL(this.url, resourceBase()).pathname });
         call('ws.open', { path: new URL(this.url, resourceBase()).pathname }, undefined, this._id).then(() => {
           if (this.readyState !== RemoteWebSocket.CONNECTING) return;
@@ -2574,18 +2598,40 @@
     const parentTransport = (() => {
       try { return parent.__CODINGNS4DSH_REMOTE_TRANSPORT__; } catch { return undefined; }
     })();
-    globalThis.__DSH_TRANSPORT__ = {
+    const bridgedTransport = {
       fetch: window.fetch.bind(window),
       openStream: openRemoteStream,
-      // 该 iframe 的所有 DSH 请求都经由已认证的 Codingns4DSH 隧道回到选定 Host。
-      // 必须声明 Host 所有权，否则 ui-settings 会把远程页面降级为 memory
-      // 模式，原生“模型”页无法读取 settings provider。
+      // 仅作为 iframe 内 RemoteWebSocket 的虚拟基址，实际请求仍回到父窗口。
+      streamBaseUrl: resourceBase(),
+      // 声明 Host 所有权，保持原生设置存储可用。
       ownsHost: true,
       generation: parentTransport?.getGeneration?.bind(parentTransport),
       onGenerationChange: parentTransport?.onGenerationChange?.bind(parentTransport),
       reconnect: parentTransport?.reconnect?.bind(parentTransport),
       close: parentTransport?.close?.bind(parentTransport),
     };
+    // 远程 DSH Web 的启动页自带 Host 注入的 __DSH_TRANSPORT__ 行，它在本脚本之后
+    // 执行：直接赋值会覆盖桥接 Transport，丢掉 openStream 和 streamBaseUrl，让
+    // /api/remote.mux 退回 iframe 自己的 WebSocket（CSP connect-src 为 none），
+    // 会话列表和原生设置页面会一起加载失败。这里改为合并写入，后到的赋值只能补充
+    // 字段，桥接能力始终保留。
+    const mergeTransport = (next) => Object.assign(
+      {},
+      next !== null && typeof next === 'object' ? next : {},
+      bridgedTransport,
+    );
+    let transportValue = mergeTransport(globalThis.__DSH_TRANSPORT__);
+    try {
+      Object.defineProperty(globalThis, '__DSH_TRANSPORT__', {
+        configurable: true,
+        enumerable: true,
+        get: () => transportValue,
+        set: (next) => { transportValue = mergeTransport(next); },
+      });
+    } catch {
+      // 同名属性不可配置时退化为一次合并赋值，同样保留桥接字段。
+      globalThis.__DSH_TRANSPORT__ = mergeTransport(globalThis.__DSH_TRANSPORT__);
+    }
     globalThis.__CODINGNS4DSH_DEBUG__ = (event, fields = {}) => {
       bridgeLog('client.' + String(event), fields);
     };
