@@ -121,8 +121,7 @@ async function renderDevices() {
   try {
     const devices = await fetchVisibleDevices();
     renderDeviceList(devices);
-    devicePresenceTimer = window.setInterval(refreshDevicePresence, devicePresenceTickMs);
-    deviceRefreshTimer = window.setInterval(() => void refreshDeviceList(), deviceRefreshIntervalMs);
+    startDeviceTimers();
     const rememberedDeviceId = sessionStorage.getItem(activeDeviceStorageKey);
     if (rememberedDeviceId && devices.some((device) => device.dshDeviceId === rememberedDeviceId && isDeviceOnline(device))) {
       // 让设备列表先完成挂载，再启动自动恢复，确保状态节点可更新。
@@ -329,7 +328,17 @@ async function startBootstrap(deviceId) {
     buttons.forEach((button) => setBusy(button, false));
     status.className = "status error";
     status.textContent = error instanceof Error ? error.message : "申请 ticket 失败";
+    // 连接失败会退回设备列表，此时需要恢复在线状态轮询并立即重新同步一次状态。
+    if (document.body.classList.contains("dsh-device-list-mode")) {
+      startDeviceTimers();
+      void refreshDeviceList();
+    }
   }
+}
+
+function startDeviceTimers() {
+  if (devicePresenceTimer === null) devicePresenceTimer = window.setInterval(refreshDevicePresence, devicePresenceTickMs);
+  if (deviceRefreshTimer === null) deviceRefreshTimer = window.setInterval(() => void refreshDeviceList(), deviceRefreshIntervalMs);
 }
 
 function stopDeviceTimers() {
