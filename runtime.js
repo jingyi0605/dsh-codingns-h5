@@ -140,9 +140,30 @@
 	function validateLimit(value, name) {
 		if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`${name} 大小限制无效`);
 	}
+	const LEGACY_DEBUG_ENV = "CODINGNS4DSH_TUNNEL_DEBUG";
+	/** 当前运行环境是否明确要求输出调试日志。 */
+	function resolveCodingNsDebugEnabled() {
+		const globals = globalThis;
+		const globalValue = globals.__CODINGNS4DSH_DEBUG_ENABLED__ ?? globals.__CODINGNS4DSH_TUNNEL_DEBUG__;
+		if (globalValue !== void 0) return parseDebugValue(globalValue);
+		if (typeof location !== "undefined") {
+			const queryValue = new URL(location.href).searchParams.get("dshDebug");
+			if (queryValue !== null) return parseDebugValue(queryValue);
+		}
+		if (typeof localStorage !== "undefined") try {
+			const stored = localStorage.getItem("codingns4dsh-debug") ?? localStorage.getItem("codingns4dsh-tunnel-debug");
+			if (stored !== null) return parseDebugValue(stored);
+		} catch {}
+		if (typeof process !== "undefined") return parseDebugValue(process.env["CODINGNS4DSH_DEBUG"] ?? process.env[LEGACY_DEBUG_ENV]);
+		return false;
+	}
+	function parseDebugValue(value) {
+		if (typeof value === "boolean") return value;
+		if (typeof value !== "string") return false;
+		return /^(1|true|yes|on)$/iu.test(value.trim());
+	}
 	//#endregion
 	//#region src/transport/debug.ts
-	const DEBUG_ENV = "CODINGNS4DSH_TUNNEL_DEBUG";
 	/** 创建一个可注入测试 sink 的调试 logger。默认开关由当前运行环境决定。 */
 	function createDshTransportDebugLogger(options = {}) {
 		const enabled = options.enabled ?? resolveDshTransportDebugEnabled();
@@ -160,30 +181,82 @@
 					side,
 					component,
 					event,
-					...fields
+					...sanitizeDshTransportDebugFields(fields)
 				});
 			}
 		};
 	}
-	/** 解析 Host 环境变量、H5 URL/localStorage 和调试全局变量。 */
-	function resolveDshTransportDebugEnabled() {
-		const globalValue = globalThis.__CODINGNS4DSH_TUNNEL_DEBUG__;
-		if (globalValue !== void 0) return parseDebugValue(globalValue);
-		if (typeof location !== "undefined") {
-			const queryValue = new URL(location.href).searchParams.get("dshDebug");
-			if (queryValue !== null) return parseDebugValue(queryValue);
+	/**
+	* 调试字段采用正向白名单。Transport 可能同时处理 token、URL、命令和正文，
+	* 因此不能依赖调用方自觉脱敏；未知字段和错误正文直接丢弃。
+	*
+	* `path` / `method` / `status` / `errorCode` 是 DSH Web 请求的路由元数据：
+	* 没有它们就无法区分「请求没到达 Host」和「请求到达但返回空结果」，
+	* 中继设置页空白这类问题只能靠日志猜。这些字段只能是 HTTP 路径与状态，
+	* 禁止把查询串、Cookie、请求/响应正文塞进来。
+	*/
+	function sanitizeDshTransportDebugFields(fields) {
+		const allowed = /* @__PURE__ */ new Set([
+			"bytes",
+			"physicalBytes",
+			"bodyBytes",
+			"sdpBytes",
+			"streamId",
+			"messageId",
+			"sessionId",
+			"generation",
+			"previousGeneration",
+			"hostId",
+			"expectedHostId",
+			"hostKind",
+			"expectedHostKind",
+			"channel",
+			"channelLabel",
+			"operation",
+			"feature",
+			"type",
+			"code",
+			"state",
+			"role",
+			"streams",
+			"activeStreams",
+			"openingStreams",
+			"maxStreams",
+			"fragmentId",
+			"chunkCount",
+			"totalBytes",
+			"payloadBytes",
+			"bufferedAmount",
+			"highWaterMark",
+			"lowWaterMark",
+			"dataType",
+			"valueType",
+			"trafficRemainingBytes",
+			"path",
+			"method",
+			"status",
+			"errorCode"
+		]);
+		const result = {};
+		for (const [key, value] of Object.entries(fields)) {
+			if (!allowed.has(key)) continue;
+			if (typeof value === "string") {
+				result[key] = key === "path" ? sanitizeDebugPath(value) : value;
+				continue;
+			}
+			if (typeof value === "number" || typeof value === "boolean" || value === null) result[key] = value;
 		}
-		if (typeof localStorage !== "undefined") try {
-			const stored = localStorage.getItem("codingns4dsh-tunnel-debug");
-			if (stored !== null) return parseDebugValue(stored);
-		} catch {}
-		if (typeof process !== "undefined") return parseDebugValue(process.env[DEBUG_ENV]);
-		return false;
+		return result;
 	}
-	function parseDebugValue(value) {
-		if (typeof value === "boolean") return value;
-		if (typeof value !== "string") return false;
-		return /^(1|true|yes|on)$/iu.test(value.trim());
+	/** 路径只保留 pathname，去掉查询串与可能带凭据的片段。 */
+	function sanitizeDebugPath(value) {
+		const query = value.indexOf("?");
+		const trimmed = query === -1 ? value : value.slice(0, query);
+		return trimmed.length > 200 ? `${trimmed.slice(0, 200)}…` : trimmed;
+	}
+	/** 解析统一的 Codingns4DSH 调试开关，保留旧隧道变量作为兼容别名。 */
+	function resolveDshTransportDebugEnabled() {
+		return resolveCodingNsDebugEnabled();
 	}
 	//#endregion
 	//#region src/transport/multiplexer.ts
