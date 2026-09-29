@@ -1,49 +1,48 @@
 (function() {
-	//#region src/shared/contracts/version.ts
-	/** 当前经过完整验证的 DSH 版本；源文件由根目录 version.json 同步。 */
-	const DSH_VERSION = "0.1.6-alpha.2";
-	/** 插件支持的 DSH 版本范围；插件版本与宿主版本独立发布。 */
-	const DSH_COMPATIBILITY = ">=0.1.5-rc.3 <0.1.8-0";
-	/** 判断宿主版本是否落在当前插件声明的 DSH 兼容范围内。 */
-	function isDshVersionCompatible(version) {
-		const match = /^>=([^ ]+) <([^ ]+)$/u.exec(DSH_COMPATIBILITY);
-		const actual = parseVersion(version);
-		const minimum = parseVersion(match?.[1] ?? "");
-		const maximum = parseVersion(match?.[2] ?? "");
-		if (!actual || !minimum || !maximum) return version === DSH_VERSION;
-		if (actual.major === maximum.major && actual.minor === maximum.minor && actual.patch === maximum.patch && actual.prerelease.length > 0) return false;
-		return compareVersions(actual, minimum) >= 0 && compareVersions(actual, maximum) < 0;
-	}
-	function parseVersion(value) {
-		const match = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/u.exec(value);
-		if (!match) return void 0;
-		return {
-			major: Number(match[1]),
-			minor: Number(match[2]),
-			patch: Number(match[3]),
-			prerelease: match[4] === void 0 ? [] : match[4].split(".").map((part) => /^\d+$/u.test(part) ? Number(part) : part)
-		};
-	}
-	function compareVersions(left, right) {
-		for (const key of [
-			"major",
-			"minor",
-			"patch"
-		]) if (left[key] !== right[key]) return left[key] - right[key];
-		if (left.prerelease.length === 0 && right.prerelease.length > 0) return 1;
-		if (left.prerelease.length > 0 && right.prerelease.length === 0) return -1;
-		for (let index = 0; index < Math.max(left.prerelease.length, right.prerelease.length); index += 1) {
-			const leftPart = left.prerelease[index];
-			const rightPart = right.prerelease[index];
-			if (leftPart === void 0) return -1;
-			if (rightPart === void 0) return 1;
-			if (leftPart === rightPart) continue;
-			if (typeof leftPart === "number" && typeof rightPart === "string") return -1;
-			if (typeof leftPart === "string" && typeof rightPart === "number") return 1;
-			return leftPart < rightPart ? -1 : 1;
+	/** 首次启用快捷会话时提供的内置指令。 */
+	const DEFAULT_QUICK_PHRASES = [
+		{
+			id: "builtin-quick-1",
+			text: "请将本次会话变更的所有代码提交到git暂存区，然后总结一条中文的提交信息"
+		},
+		{
+			id: "builtin-quick-2",
+			text: "分析本项目模块的代码实现，并分析存在的问题"
+		},
+		{
+			id: "builtin-quick-3",
+			text: "分析当前项目中的未提交文件，按照功能模块进行分类提交，提交信息格式请参考我最近的提交记录"
+		},
+		{
+			id: "builtin-quick-4",
+			text: "请给出完整的开发提示词，我将在新的页面中继续开发"
 		}
-		return 0;
-	}
+	];
+	const DEFAULT_CODINGNS_CONTROL_BASE_URLS = ["https://channel.codingns.com:1443"];
+	DEFAULT_QUICK_PHRASES.map((phrase) => ({ ...phrase }));
+	[...DEFAULT_CODINGNS_CONTROL_BASE_URLS];
+	//#endregion
+	//#region src/shared/contracts/peer-host.ts
+	const PEER_HOST_ERROR_CODES = {
+		NOT_FOUND: "PEER_HOST_NOT_FOUND",
+		NOT_READY: "PEER_HOST_NOT_READY",
+		SESSION_REQUIRED: "PEER_HOST_SESSION_REQUIRED",
+		PROXY_PATH_NOT_ALLOWED: "PEER_HOST_PROXY_PATH_NOT_ALLOWED",
+		SCOPE_MISMATCH: "PEER_HOST_SCOPE_MISMATCH",
+		PROXY_UNREACHABLE: "PEER_HOST_PROXY_UNREACHABLE",
+		RESPONSE_INVALID: "PEER_HOST_RESPONSE_INVALID",
+		TOOL_UNSUPPORTED: "PEER_HOST_TOOL_UNSUPPORTED",
+		INVALID_ROUTE: "PEER_HOST_INVALID_ROUTE",
+		DUPLICATE: "PEER_HOST_DUPLICATE",
+		PLUGIN_MISSING: "PEER_HOST_PLUGIN_MISSING",
+		VERSION_MISMATCH: "PEER_HOST_VERSION_MISMATCH",
+		IDENTITY_CHANGED: "PEER_HOST_IDENTITY_CHANGED",
+		UNREACHABLE: "PEER_HOST_UNREACHABLE",
+		RELAY_UNAVAILABLE: "PEER_HOST_RELAY_UNAVAILABLE",
+		AGGREGATE_UNAVAILABLE: "PEER_HOST_AGGREGATE_UNAVAILABLE",
+		STALE_GENERATION: "PEER_HOST_STALE_GENERATION"
+	};
+	PEER_HOST_ERROR_CODES.NOT_READY, PEER_HOST_ERROR_CODES.PROXY_PATH_NOT_ALLOWED, PEER_HOST_ERROR_CODES.SCOPE_MISMATCH, PEER_HOST_ERROR_CODES.PROXY_UNREACHABLE, PEER_HOST_ERROR_CODES.RESPONSE_INVALID, PEER_HOST_ERROR_CODES.TOOL_UNSUPPORTED, PEER_HOST_ERROR_CODES.INVALID_ROUTE, PEER_HOST_ERROR_CODES.DUPLICATE, PEER_HOST_ERROR_CODES.PLUGIN_MISSING, PEER_HOST_ERROR_CODES.IDENTITY_CHANGED, PEER_HOST_ERROR_CODES.UNREACHABLE, PEER_HOST_ERROR_CODES.RELAY_UNAVAILABLE, PEER_HOST_ERROR_CODES.AGGREGATE_UNAVAILABLE, PEER_HOST_ERROR_CODES.STALE_GENERATION;
 	const MAGIC = new Uint8Array([
 		68,
 		83,
@@ -708,7 +707,7 @@
 	};
 	//#endregion
 	//#region src/transport/dsh-session.ts
-	/** 负责 DSH hello/ready、版本能力协商和心跳，不执行任何业务。 */
+	/** 负责 DSH hello/ready、协议与能力协商和心跳，不执行任何业务。 */
 	var DshSession = class {
 		options;
 		stateValue = "idle";
@@ -791,18 +790,32 @@
 		sendHello() {
 			this.send(this.createEnvelope("session.hello", "session", {
 				protocol: this.options.protocol ?? "dsh-transport-v1",
-				dshVersion: this.options.dshVersion ?? "0.1.6-alpha.2",
+				dshVersion: this.options.dshVersion ?? "0.2.0-rc.1",
 				capabilities: [...this.options.capabilities ?? []]
 			}));
 		}
-		sendReady(capabilities) {
+		sendReady(capabilities, peerDshVersion) {
 			this.send(this.createEnvelope("session.ready", "session", {
 				protocol: this.options.protocol ?? "dsh-transport-v1",
-				dshVersion: this.options.dshVersion ?? "0.1.6-alpha.2",
+				dshVersion: peerDshVersion ?? this.options.dshVersion ?? "0.2.0-rc.1",
+				hostDshVersion: this.options.dshVersion ?? "0.2.0-rc.1",
 				capabilities: [...capabilities],
 				byteCredit: 65536,
 				messageCredit: 32
 			}));
+		}
+		/**
+		* 握手只校验隧道协议版本：对端缺省不带协议时按 v1 处理。
+		* DSH 应用版本不再参与握手门槛；只有插件升级 DSH_ENVELOPE_PROTOCOL
+		* （对应不再兼容的 WebRTC 变更）时，才会在此拒绝旧协议对端。
+		*/
+		handshakeProtocolMatches(envelope) {
+			return (envelope.meta.protocol ?? "dsh-transport-v1") === (this.options.protocol ?? "dsh-transport-v1");
+		}
+		/** 协议不兼容时先回发 session.close 让对端拿到明确原因，再收敛本地会话。 */
+		rejectHandshake(reason) {
+			this.send(this.createEnvelope("session.close", "session", { reason }));
+			this.fail(new Error(reason));
 		}
 		receive(data) {
 			if (this.stateValue === "closed") return;
@@ -838,12 +851,11 @@
 					this.fail(/* @__PURE__ */ new Error("非法 session.hello"));
 					return;
 				}
-				const protocol = envelope.meta.protocol;
-				const dshVersion = envelope.meta.dshVersion;
-				if (protocol !== (this.options.protocol ?? "dsh-transport-v1") || typeof dshVersion !== "string" || !isDshVersionCompatible(dshVersion)) {
-					this.fail(/* @__PURE__ */ new Error("PROTOCOL_VERSION_UNSUPPORTED"));
+				if (!this.handshakeProtocolMatches(envelope)) {
+					this.rejectHandshake("PROTOCOL_VERSION_UNSUPPORTED");
 					return;
 				}
+				const peerDshVersion = typeof envelope.meta.dshVersion === "string" ? envelope.meta.dshVersion : void 0;
 				const offered = readCapabilities(envelope.meta.capabilities);
 				const allowed = new Set(this.options.capabilities ?? offered);
 				this.remoteCapabilities = offered.filter((capability) => allowed.has(capability));
@@ -852,7 +864,7 @@
 					role: this.options.role,
 					capabilities: this.remoteCapabilities
 				});
-				this.sendReady(this.remoteCapabilities);
+				this.sendReady(this.remoteCapabilities, peerDshVersion);
 				this.readyResolve?.();
 				this.options.onReady?.(this);
 				return;
@@ -862,10 +874,8 @@
 					this.fail(/* @__PURE__ */ new Error("非法 session.ready"));
 					return;
 				}
-				const protocol = envelope.meta.protocol;
-				const dshVersion = envelope.meta.dshVersion;
-				if (protocol !== (this.options.protocol ?? "dsh-transport-v1") || typeof dshVersion !== "string" || !isDshVersionCompatible(dshVersion)) {
-					this.fail(/* @__PURE__ */ new Error("PROTOCOL_VERSION_UNSUPPORTED"));
+				if (!this.handshakeProtocolMatches(envelope)) {
+					this.rejectHandshake("PROTOCOL_VERSION_UNSUPPORTED");
 					return;
 				}
 				this.remoteCapabilities = readCapabilities(envelope.meta.capabilities);
@@ -926,11 +936,29 @@
 				}
 			}, interval);
 		}
+		/**
+		* 会话失败必须同时收敛物理线路。
+		*
+		* 早期实现只把本地状态改成 `degraded`、拒绝 `waitReady`：对端既收不到
+		* `session.close`，DataChannel 也不会关闭，于是一次发送失败（例如浏览器宣告的
+		* max-message-size 太小、分片发送被拒、背压超时）之后，对端会在一个已经死掉的
+		* 线路上等一个永远不回来的响应。中继页面的原生设置 `settings/describe` 正是这样
+		* 永久停在 loading：页面空白、没有任何报错。
+		*/
 		fail(error) {
+			if (this.stateValue === "closed" || this.stateValue === "degraded") return;
+			const wasReady = this.stateValue === "ready";
 			this.stateValue = "degraded";
 			this.debug.log("session.error", { error: error.message });
 			this.readyReject?.(error);
 			this.options.onError?.(error);
+			if (wasReady) try {
+				this.send(this.createEnvelope("session.close", "session", { reason: error.message }));
+			} catch {}
+			const carrier = this.options.carrier;
+			setTimeout(() => {
+				carrier.close(`DSH Session 失败：${error.message}`);
+			}, 0);
 		}
 	};
 	function envelopeDebugFields(envelope) {
