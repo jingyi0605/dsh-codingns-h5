@@ -126,6 +126,9 @@ async function renderDevices() {
     for (const button of document.querySelectorAll("[data-device-id]")) {
       button.addEventListener("click", () => startBootstrap(button.dataset.deviceId));
     }
+    for (const button of document.querySelectorAll("[data-remove-device]")) {
+      button.addEventListener("click", () => void removeDevice(button.dataset.removeDevice, button));
+    }
     refreshDevicePresenceLabels();
     deviceStatusTimer = window.setInterval(refreshDevicePresenceLabels, 1000);
     const rememberedDeviceId = sessionStorage.getItem(activeDeviceStorageKey);
@@ -183,9 +186,52 @@ function deviceCard(device) {
         <p class="muted device-details"><span>版本：${escapeHtml(device.dshVersion || "未知")}</span><span>计算机名：${escapeHtml(device.computerName || "未知")}</span></p>
         <p class="muted device-heartbeat" data-heartbeat="${heartbeat}" data-online="${online ? "true" : "false"}">${formatDevicePresence(device)}</p>
       </div>
-      <button class="primary" data-device-id="${id}" type="button" ${online ? "" : "disabled"}>${online ? "连接" : "不可用"}</button>
+      <div class="device-card__actions">
+        <button class="primary" data-device-id="${id}" type="button" ${online ? "" : "disabled"}>${online ? "连接" : "不可用"}</button>
+        <button class="danger" data-remove-device="${id}" type="button" title="删除这台离线 DSH Host" ${online ? "hidden" : ""}>删除</button>
+      </div>
     </article>
   `;
+}
+
+// 只有离线设备才允许删除，且删除不可恢复，因此先确认再调用控制台接口。
+// 删除走控制台的 DELETE /api/v1/dsh/devices/:dshDeviceId，沿用 H5 的 HttpOnly Cookie 会话。
+async function removeDevice(deviceId, trigger) {
+  const status = document.querySelector("#status");
+  const card = trigger instanceof Element ? trigger.closest(".device-card") : null;
+  if (!deviceId || !card) return;
+  if (card.getAttribute("data-online") === "true") {
+    status.className = "muted status";
+    status.textContent = "设备刚刚恢复在线，已取消删除。";
+    return;
+  }
+  const name = card.querySelector("h3")?.textContent?.trim() || deviceId;
+  if (!window.confirm(`确定删除离线设备“${name}”？该 DSH Host 需要重新注册并配对后才能再次使用。`)) return;
+
+  setBusy(trigger, true);
+  status.className = "muted status";
+  status.textContent = `正在删除 DSH Host ${deviceId}…`;
+  try {
+    await request(`/api/v1/dsh/devices/${encodeURIComponent(deviceId)}`, { method: "DELETE" });
+    if (sessionStorage.getItem(activeDeviceStorageKey) === deviceId) sessionStorage.removeItem(activeDeviceStorageKey);
+    const list = card.parentElement;
+    card.remove();
+    if (list && list.querySelectorAll(".device-card").length === 0) {
+      list.outerHTML = `<p class="empty">当前没有已注册的 DSH Host。</p>`;
+    }
+    status.textContent = `已删除 DSH Host ${deviceId}。`;
+  } catch (error) {
+    setBusy(trigger, false);
+    if (error instanceof ApiError && error.status === 401) {
+      session = null;
+      sessionStorage.removeItem(sessionStorageKey);
+      sessionStorage.removeItem(activeDeviceStorageKey);
+      renderLogin("登录已过期，请重新登录");
+      return;
+    }
+    status.className = "status error";
+    status.textContent = error instanceof Error ? error.message : "删除 DSH 设备失败";
+  }
 }
 
 async function startBootstrap(deviceId) {
@@ -248,6 +294,9 @@ function refreshDevicePresenceLabels() {
       button.disabled = !online;
       button.textContent = online ? "连接" : "不可用";
     }
+    // 设备恢复心跳后立即收回删除入口，避免误删正在使用的设备。
+    const removeButton = card?.querySelector("[data-remove-device]");
+    if (removeButton instanceof HTMLButtonElement) removeButton.hidden = online;
     element.textContent = formatDevicePresence({
       online,
       lastHeartbeatAt: heartbeat || null,

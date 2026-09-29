@@ -6,7 +6,7 @@
 
 1. 使用控制站登录态登录。
 2. 读取独立的 DSH 设备列表。
-3. 只选择在线的 DSH Host。
+3. 只选择在线的 DSH Host；离线设备在列表右侧提供「删除」按钮，确认后调用控制台 `DELETE /api/v1/dsh/devices/:dshDeviceId`。
 4. 通过控制站 HttpOnly 会话申请 `role: client` 的短期 Relay ticket。Client ticket 不携带、也不需要 Host 的 `deviceCredential`。
 5. 在浏览器建立 WebRTC DataChannel，完成 DSH Session hello/ready。
 6. 通过 `web.session.open` 和 `web.boot.get` 创建隔离 iframe，动态读取 Host 的 DSH Web boot、资源和 WebSocket。
