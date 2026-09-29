@@ -8,6 +8,12 @@ const app = document.querySelector("#app");
 const deviceHeartbeatTimeoutMs = 45_000;
 const devicePresenceTickMs = 1_000;
 const deviceRefreshIntervalMs = 15_000;
+// 后退手势参数：只在屏幕左缘起手，避免与 iframe 内横向滚动/侧边栏手势冲突。
+const edgeZonePx = 22;
+const swipeTriggerPx = 56;
+const swipeMaxVerticalPx = 70;
+// 远程视图会在历史里压入一条哨兵记录，使系统返回键/手势能先回到设备列表。
+const remoteViewHistoryState = { codingns4dsh: "remote-view" };
 
 let session = readSession();
 let activeRuntime = null;
@@ -16,6 +22,8 @@ let deviceRefreshTimer = null;
 let deviceRefreshInFlight = false;
 let devicePresence = new Map();
 let logoutInProgress = false;
+// 当前视图：login | devices | remote。后退手势与系统返回键都依据它决定语义。
+let currentView = "login";
 
 window.addEventListener("message", (event) => {
   const iframeWindow = activeRuntime?.webContext?.iframe?.contentWindow;
@@ -32,17 +40,56 @@ document.addEventListener("visibilitychange", () => {
 
 // 页面刷新或关闭时必须释放 WebRTC、信令和 iframe WebSocket，避免 Relay 房间
 // 长时间保留旧 Client，最终触发 TOO_MANY_CLIENTS 并污染下一次联调。
+//
+// 但 iOS 主屏 Web App 切到后台也会触发 pagehide，若立即 dispose 会导致
+// 每次切换应用都断连。因此改为「宽限期 + 可取消」：只有确认没有回到前台
+// 才真正释放。即使真的残留，getClientSessionId 的固定 sessionId 也会让
+// 新连接顶掉旧连接，不会产生 TOO_MANY_CLIENTS。
+const pageHideDisposeGraceMs = 30_000;
+let pendingDisposeTimer = null;
+
+function scheduleRuntimeDispose() {
+  cancelPendingDispose();
+  pendingDisposeTimer = window.setTimeout(() => {
+    pendingDisposeTimer = null;
+    const runtime = activeRuntime;
+    if (runtime === null) return;
+    activeRuntime = null;
+    void runtime.dispose().catch(() => undefined);
+  }, pageHideDisposeGraceMs);
+}
+
+function cancelPendingDispose() {
+  if (pendingDisposeTimer === null) return;
+  window.clearTimeout(pendingDisposeTimer);
+  pendingDisposeTimer = null;
+}
+
 window.addEventListener("pagehide", () => {
-  const runtime = activeRuntime;
-  activeRuntime = null;
-  void runtime?.dispose().catch(() => undefined);
+  scheduleRuntimeDispose();
 });
 
-startParticleField();
-render();
+// 回到前台时取消待释放的运行时，保持 WebRTC 会话存活。
+window.addEventListener("pageshow", () => {
+  cancelPendingDispose();
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") cancelPendingDispose();
+});
+
+// 启动顺序集中在文件末尾：这些函数会读取下方的 let/const 状态
+// （如 backButton、hapticPatterns），提前调用会命中 TDZ 而抛 ReferenceError。
 
 function setRemoteWebMode(enabled) {
   document.body.classList.toggle("remote-web-mode", enabled);
+}
+
+// 视图状态是后退语义的唯一依据：remote 内后退回设备列表，列表页后退才允许退出。
+// 只有这里触发哨兵与手势的同步，避免在退出过程中被重新压入历史记录。
+function setView(view) {
+  currentView = view;
+  syncBackAffordances();
 }
 
 function render() {
@@ -51,6 +98,8 @@ function render() {
   setRemoteWebMode(false);
   if (!session) {
     renderLogin();
+    // iOS 主屏 Web App 的 sessionStorage 与 Safari 隔离，但 Cookie 可能仍有效。
+    void restoreSessionFromCookie();
     return;
   }
 
@@ -60,6 +109,7 @@ function render() {
 function renderLogin(errorMessage = "") {
   document.body.classList.remove("dsh-device-list-mode");
   setRemoteWebMode(false);
+  setView("login");
   app.innerHTML = `
     <form class="cyber-form" id="login-form">
       <div class="cyber-card-header-wrap">
@@ -87,8 +137,11 @@ function renderLogin(errorMessage = "") {
 
   document.querySelector("#login-form").addEventListener("submit", async (event) => {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    setBusy(event.currentTarget, true);
+    // currentTarget 在 await 之后会被置为 null，必须提前捕获表单引用，
+    // 否则登录失败时 catch 里的 setBusy 会抛 TypeError 并吞掉真正的错误提示。
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    setBusy(formElement, true);
     try {
       const response = await request("/api/public/auth/h5/login", {
         method: "POST",
@@ -104,7 +157,7 @@ function renderLogin(errorMessage = "") {
       sessionStorage.setItem(sessionStorageKey, JSON.stringify(session));
       render();
     } catch (error) {
-      setBusy(event.currentTarget, false);
+      setBusy(formElement, false);
       renderLogin(error instanceof Error ? error.message : "登录失败");
     }
   });
@@ -114,6 +167,7 @@ async function renderDevices() {
   stopDeviceTimers();
   document.body.classList.add("dsh-device-list-mode");
   setRemoteWebMode(false);
+  setView("devices");
   app.innerHTML = `
     <div class="loading"><span class="spinner"></span><span>读取 DSH 设备…</span></div>
   `;
@@ -208,6 +262,7 @@ async function logoutBrowserSession() {
   sessionStorage.removeItem(sessionStorageKey);
   sessionStorage.removeItem(activeDeviceStorageKey);
   render();
+  dropRemoteHistorySentinel();
   logoutInProgress = false;
 }
 
@@ -219,6 +274,17 @@ function expireSession() {
   sessionStorage.removeItem(activeDeviceStorageKey);
   stopDeviceTimers();
   renderLogin("登录已过期，请重新登录");
+}
+
+// 从远程视图内登出或会话过期时，历史里的哨兵记录会让后退键无目标可退。
+// 回到登录页后统一把它弹掉，避免用户按返回键时出现空白历史项。
+function dropRemoteHistorySentinel() {
+  if (!hasRemoteHistorySentinel()) return;
+  try {
+    history.back();
+  } catch {
+    // 忽略：部分环境不允许脚本触发返回。
+  }
 }
 
 // 设备列表是跨版本边界，兼容旧控制站可能返回的下划线字段，避免明细因 DTO 命名差异丢失。
@@ -319,11 +385,15 @@ async function startBootstrap(deviceId) {
     stopDeviceTimers();
     sessionStorage.setItem(activeDeviceStorageKey, deviceId);
     setRemoteWebMode(true);
+    setView("remote");
+    haptic("success");
     window.dispatchEvent(new CustomEvent("dsh-bootstrap-ready", { detail: { deviceId, runtime: activeRuntime } }));
   } catch (error) {
     await activeRuntime?.dispose().catch(() => undefined);
     activeRuntime = null;
     setRemoteWebMode(false);
+    setView("devices");
+    haptic("error");
     sessionStorage.removeItem(activeDeviceStorageKey);
     buttons.forEach((button) => setBusy(button, false));
     status.className = "status error";
@@ -475,6 +545,356 @@ function getClientSessionId(deviceId) {
   return generated;
 }
 
+/* ===================== 触感反馈 ===================== */
+
+// Android Chrome 支持 navigator.vibrate。iOS Safari 从未实现 Vibration API，
+// 社区做法是借隐藏 <input type="switch"> 触发系统开关触感，但该技巧在
+// iOS 26.5+ 已被 Apple 封堵（见 flarum/framework#4694）。
+// 因此这里把 iOS 路径当作「可选增强」：失败必须静默降级，绝不阻塞交互。
+const hapticPatterns = {
+  light: [10],
+  medium: [18],
+  success: [12, 40, 20],
+  error: [30, 60, 30],
+};
+
+let iosHapticLabel = null;
+
+function isIos() {
+  return /iP(?:hone|ad|od)/.test(navigator.userAgent)
+    || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+}
+
+// iOS 技巧：点击关联到 <input type="checkbox" switch> 的 <label>，
+// 由系统产生开关切换触感。必须点击 label（而不是 input），
+// 且每次需要改变 checked 状态，否则没有状态变化也就没有触感。
+// 该技巧在 iOS 26.5+ 已失效，此时静默降级。
+function tryIosHaptic() {
+  try {
+    if (iosHapticLabel === null) {
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.setAttribute("switch", "");
+      input.id = "codingns4dsh-haptic";
+      input.setAttribute("aria-hidden", "true");
+      input.tabIndex = -1;
+      input.style.cssText = "position:fixed;left:-9999px;top:-9999px;width:1px;height:1px;opacity:0;";
+      const label = document.createElement("label");
+      label.setAttribute("for", input.id);
+      label.setAttribute("aria-hidden", "true");
+      label.style.cssText = "position:fixed;left:-9999px;top:-9999px;";
+      document.body.append(label, input);
+      iosHapticLabel = label;
+    }
+    const input = document.getElementById("codingns4dsh-haptic");
+    if (input instanceof HTMLInputElement) input.checked = !input.checked;
+    iosHapticLabel.click();
+  } catch {
+    // 静默降级：触感永远不是功能依赖。
+  }
+}
+
+/** 统一的触感入口；不支持时安全返回 false。 */
+function haptic(kind = "light") {
+  if (typeof navigator.vibrate === "function") {
+    try {
+      return navigator.vibrate(hapticPatterns[kind] ?? hapticPatterns.light);
+    } catch {
+      return false;
+    }
+  }
+  if (isIos()) {
+    tryIosHaptic();
+    return true;
+  }
+  return false;
+}
+
+/* ===================== 后退手势与系统返回键 ===================== */
+
+// 本项目所有视图切换都是内存状态，代码库中没有一处 history 调用，
+// 因此默认情况下：Android 返回键会直接退出 PWA，iOS 主屏 Web App 则
+// 完全没有边缘滑动返回。这里用「哨兵历史记录 + 视图状态机」补齐语义：
+//   远程 Web 内后退 → 回设备列表（并释放 Relay 会话）→ 列表页再后退才退出。
+let backButton = null;
+let gestureZone = null;
+let swipeTracking = false;
+let swipeStartX = 0;
+let swipeStartY = 0;
+let swipeStartAt = 0;
+
+function isStandalone() {
+  return window.matchMedia?.("(display-mode: standalone)")?.matches === true
+    || window.matchMedia?.("(display-mode: fullscreen)")?.matches === true
+    || navigator.standalone === true;
+}
+
+function hasRemoteHistorySentinel() {
+  return history.state?.codingns4dsh === remoteViewHistoryState.codingns4dsh;
+}
+
+// 进入远程视图时压入一条哨兵记录，使系统返回键/手势有可回退的目标。
+function ensureRemoteHistorySentinel() {
+  if (hasRemoteHistorySentinel()) return;
+  try {
+    history.pushState(remoteViewHistoryState, "", location.href);
+  } catch {
+    // 极少数环境禁止 pushState，此时退回「返回按钮 + 自定义手势」。
+  }
+}
+
+// 释放 WebRTC / 信令 / iframe WebSocket，并回到设备列表。
+// 主动释放可避免 Relay 房间长期保留旧 Client 触发 TOO_MANY_CLIENTS。
+//
+// 关键顺序：必须先同步切走视图状态，再 await dispose()。
+// popstate 处理器在调用本函数后会紧接着同步执行 syncBackAffordances()，
+// 若此时 currentView 仍是 "remote"，就会重新压入哨兵记录，导致返回后
+// 历史状态残留、第二次返回无目标可退。
+async function exitRemoteView() {
+  if (currentView !== "remote") return;
+  const runtime = activeRuntime;
+  activeRuntime = null;
+  sessionStorage.removeItem(activeDeviceStorageKey);
+  setRemoteWebMode(false);
+  setView("devices");
+  render();
+  await runtime?.dispose().catch(() => undefined);
+}
+
+function syncBackAffordances() {
+  const inRemote = currentView === "remote";
+  if (backButton !== null) backButton.hidden = !inRemote;
+  if (inRemote) {
+    ensureRemoteHistorySentinel();
+    attachRemoteSwipe();
+  }
+}
+
+function handleBackRequest() {
+  if (currentView === "remote") {
+    haptic("light");
+    // 先切换视图，再弹掉哨兵，避免 popstate 二次触发退出逻辑。
+    void exitRemoteView().then(() => {
+      if (hasRemoteHistorySentinel()) history.back();
+    });
+    return true;
+  }
+  return false;
+}
+
+function initBackNavigation() {
+  backButton = document.querySelector("[data-back-button]");
+  gestureZone = document.querySelector("[data-back-gesture-zone]");
+
+  backButton?.addEventListener("click", () => {
+    handleBackRequest();
+  });
+
+  // Android 返回键、iOS 浏览器内边缘滑动、以及我们自己的 history.back()
+  // 最终都会走到这里。
+  window.addEventListener("popstate", () => {
+    if (currentView === "remote") void exitRemoteView();
+    syncBackAffordances();
+  });
+
+  // 兜底手势区：仅在无法访问同源 iframe 文档时才启用。
+  if (gestureZone !== null) {
+    attachSwipeListeners(gestureZone);
+  }
+}
+
+function beginSwipe(x, y) {
+  swipeTracking = true;
+  swipeStartX = x;
+  swipeStartY = y;
+  swipeStartAt = Date.now();
+}
+
+// 返回 true 表示这是一次明确的横向手势，应当吞掉事件避免触发 iframe 内滚动。
+function moveSwipe(x, y, event) {
+  if (!swipeTracking) return false;
+  const deltaX = x - swipeStartX;
+  const deltaY = y - swipeStartY;
+  // 纵向意图明显时放弃接管，交还给页面/iframe 正常滚动。
+  if (Math.abs(deltaY) > swipeMaxVerticalPx && Math.abs(deltaY) > Math.abs(deltaX)) {
+    swipeTracking = false;
+    return false;
+  }
+  if (deltaX > 0 && Math.abs(deltaX) > Math.abs(deltaY)) {
+    event?.preventDefault?.();
+    return true;
+  }
+  return false;
+}
+
+function endSwipe(x) {
+  if (!swipeTracking) return false;
+  swipeTracking = false;
+  const deltaX = x - swipeStartX;
+  const elapsed = Date.now() - swipeStartAt;
+  // 位移足够，或快速轻扫（速度兜底），都判定为返回。
+  return deltaX >= swipeTriggerPx || (deltaX >= 30 && elapsed < 250);
+}
+
+// 把边缘手势监听挂到同源 iframe 文档上。iframe 内的 touch 事件不会冒泡到
+// 父页面，因此必须直接在其文档上监听。srcdoc + allow-same-origin 使
+// contentDocument 可访问；若不可访问则退回窄边兜底区。
+// 用 WeakSet 去重：srcdoc 导航会替换文档对象，load 之后需要重新挂载。
+const swipeAttachedDocuments = new WeakSet();
+
+function attachSwipeListeners(target) {
+  if (target === null || swipeAttachedDocuments.has(target)) return;
+  swipeAttachedDocuments.add(target);
+
+  target.addEventListener("touchstart", (event) => {
+    if (event.touches.length !== 1) return;
+    const touch = event.touches[0];
+    if (touch.clientX > edgeZonePx) return;
+    beginSwipe(touch.clientX, touch.clientY);
+  }, { passive: true });
+
+  target.addEventListener("touchmove", (event) => {
+    if (!swipeTracking || event.touches.length !== 1) return;
+    const touch = event.touches[0];
+    // 需要 preventDefault 阻断 iframe 自身滚动，故必须 passive: false。
+    moveSwipe(touch.clientX, touch.clientY, event);
+  }, { passive: false });
+
+  target.addEventListener("touchend", (event) => {
+    if (!swipeTracking) return;
+    const touch = event.changedTouches[0];
+    if (touch && endSwipe(touch.clientX)) handleBackRequest();
+    else swipeTracking = false;
+  }, { passive: true });
+
+  target.addEventListener("touchcancel", () => {
+    swipeTracking = false;
+  }, { passive: true });
+}
+
+let swipeBoundIframe = null;
+
+function attachRemoteSwipe() {
+  const iframe = activeRuntime?.webContext?.iframe;
+  if (iframe === null || iframe === undefined) return;
+
+  // srcdoc 导航完成后文档会被替换，必须在其 load 后重新挂载。
+  if (swipeBoundIframe !== iframe) {
+    swipeBoundIframe = iframe;
+    iframe.addEventListener("load", () => attachRemoteSwipe(), { passive: true });
+  }
+
+  let doc = null;
+  try {
+    doc = iframe.contentDocument;
+  } catch {
+    doc = null;
+  }
+  if (doc === null) {
+    // 跨源或沙箱受限：启用窄边手势区作为兜底。
+    document.body.classList.add("back-gesture-fallback");
+    return;
+  }
+  document.body.classList.remove("back-gesture-fallback");
+  attachSwipeListeners(doc);
+}
+
+/* ===================== 安装引导 ===================== */
+
+// Android Chrome 触发 beforeinstallprompt 后需要由用户手势调用 prompt()；
+// iOS 没有安装 API，只能提示用户手动「添加到主屏幕」。
+let deferredInstallPrompt = null;
+
+function initInstallPrompt() {
+  window.addEventListener("beforeinstallprompt", (event) => {
+    event.preventDefault();
+    deferredInstallPrompt = event;
+    showInstallHint("android");
+  });
+
+  window.addEventListener("appinstalled", () => {
+    deferredInstallPrompt = null;
+    document.querySelector("[data-install-hint]")?.remove();
+  });
+
+  // iOS Safari 无安装事件，需要在浏览器标签页中主动提示一次。
+  if (isIos() && !isStandalone()) showInstallHint("ios");
+}
+
+function showInstallHint(platform) {
+  if (document.querySelector("[data-install-hint]") !== null) return;
+  if (localStorage.getItem("codingns4dsh.h5.install-hint-dismissed") === "1") return;
+
+  const hint = document.createElement("div");
+  hint.className = "install-hint";
+  hint.setAttribute("data-install-hint", platform);
+  hint.setAttribute("role", "note");
+  hint.innerHTML = platform === "ios"
+    ? `<span>安装到主屏：点底部「分享」<b>⎋</b> → 「添加到主屏幕」，即可全屏使用。</span>`
+    : `<span>把 DSH Web 安装到桌面，获得全屏体验。</span>`;
+  const action = document.createElement("button");
+  action.type = "button";
+  action.className = "install-hint__action";
+  action.textContent = platform === "ios" ? "知道了" : "安装";
+  const dismiss = document.createElement("button");
+  dismiss.type = "button";
+  dismiss.className = "install-hint__dismiss";
+  dismiss.setAttribute("aria-label", "不再提示");
+  dismiss.textContent = "×";
+  hint.append(action, dismiss);
+
+  action.addEventListener("click", async () => {
+    if (platform === "android" && deferredInstallPrompt !== null) {
+      const prompt = deferredInstallPrompt;
+      deferredInstallPrompt = null;
+      hint.remove();
+      try {
+        await prompt.prompt();
+        await prompt.userChoice;
+      } catch {
+        // 用户取消或环境不支持，忽略。
+      }
+      return;
+    }
+    dismissHint(hint);
+  });
+  dismiss.addEventListener("click", () => dismissHint(hint));
+  document.body.append(hint);
+}
+
+function dismissHint(hint) {
+  localStorage.setItem("codingns4dsh.h5.install-hint-dismissed", "1");
+  hint.remove();
+}
+
+/* ===================== 会话恢复（iOS 主屏独立 Cookie 空间） ===================== */
+
+// iOS 主屏 Web App 与 Safari 使用相互隔离的网站数据，因此 sessionStorage
+// 里的会话摘要不会带过去，但 HttpOnly Cookie 可能仍然有效。这里静默探测
+// 一次：成功则直接进入设备列表，避免每次从主屏启动都要求重新登录。
+async function restoreSessionFromCookie() {
+  if (session !== null) return;
+  try {
+    const response = await request("/api/v1/dsh/devices", { cache: "no-store" });
+    const devices = Array.isArray(response.devices) ? response.devices.map(normalizeDevice) : [];
+    session = { expiresAt: null, email: response?.account?.email ?? null };
+    sessionStorage.setItem(sessionStorageKey, JSON.stringify(session));
+    // 复用这次探测的结果，避免紧接着再拉一次设备列表。
+    stopDeviceTimers();
+    document.body.classList.add("dsh-device-list-mode");
+    setRemoteWebMode(false);
+    setView("devices");
+    renderDeviceList(devices);
+    startDeviceTimers();
+    const rememberedDeviceId = sessionStorage.getItem(activeDeviceStorageKey);
+    if (rememberedDeviceId && devices.some((device) => device.dshDeviceId === rememberedDeviceId && isDeviceOnline(device))) {
+      queueMicrotask(() => startBootstrap(rememberedDeviceId));
+    }
+  } catch {
+    // 401 或其他错误都保持登录页，不打扰用户。
+  }
+}
+
 async function request(pathname, options = {}) {
   const headers = { accept: "application/json" };
   if (options.body !== undefined) headers["content-type"] = "application/json";
@@ -516,3 +936,12 @@ class ApiError extends Error {
     this.status = status;
   }
 }
+
+/* ===================== 启动 ===================== */
+
+// 放在文件末尾，确保上方所有 let/const（backButton、hapticPatterns 等）
+// 都已初始化，避免 TDZ 抛错。
+startParticleField();
+render();
+initBackNavigation();
+initInstallPrompt();

@@ -65,6 +65,7 @@ body.remote-web-mode #app > iframe {
   width: 100%;
   height: 100%;
   min-height: 100vh;
+  min-height: 100dvh;
   border: 0;
 }
 
@@ -249,3 +250,148 @@ body.remote-web-mode #app > iframe { display: block; width: 100%; height: 100%; 
   .device-card__actions { width: 100%; }
   .device-card .device-card__actions .primary { flex: 1 1 0; width: auto; }
 }
+
+/* ===== PWA / 移动端适配 ===== */
+
+/* 安全区：viewport-fit=cover 之后，登录页与设备列表需要避开刘海与底部横条。
+   注意 body.remote-web-mode 下容器 padding 会被更高优先级的规则重置为 0，
+   远程 DSH Web 保持满屏，其内部可用 env() 自行处理安全区。 */
+.cyber-login-container {
+  padding:
+    calc(24px + env(safe-area-inset-top, 0px))
+    calc(24px + env(safe-area-inset-right, 0px))
+    calc(24px + env(safe-area-inset-bottom, 0px))
+    calc(24px + env(safe-area-inset-left, 0px));
+}
+
+@media (max-width: 520px) {
+  .cyber-login-container {
+    padding:
+      calc(20px + env(safe-area-inset-top, 0px))
+      calc(16px + env(safe-area-inset-right, 0px))
+      calc(20px + env(safe-area-inset-bottom, 0px))
+      calc(16px + env(safe-area-inset-left, 0px));
+  }
+}
+
+/* 全屏接管时禁止页面级橡皮筋滚动，避免误触发下拉刷新。 */
+body.remote-web-mode {
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* ===== 后退手势与返回控件 ===== */
+
+/* 兜底手势区：默认宽度为 0，不占用也不遮挡 iframe。
+   只有当同源 iframe 文档不可访问（无法在其上挂监听）时才启用一条窄边。 */
+.back-gesture-zone {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 5;
+  width: 0;
+  pointer-events: none;
+  touch-action: pan-y;
+}
+
+body.back-gesture-fallback .back-gesture-zone {
+  width: 20px;
+  pointer-events: auto;
+}
+
+/* 返回按钮：手势的可见入口，同时兼容不便使用边缘滑动的场景。 */
+.back-fab {
+  position: fixed;
+  left: calc(10px + env(safe-area-inset-left, 0px));
+  bottom: calc(18px + env(safe-area-inset-bottom, 0px));
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 1px solid rgba(59, 130, 246, .45);
+  border-radius: 50%;
+  background: rgba(15, 23, 42, .72);
+  color: #dbeafe;
+  font-size: 26px;
+  line-height: 1;
+  opacity: .4;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: opacity .18s ease, transform .18s ease;
+  touch-action: manipulation;
+}
+
+.back-fab[hidden] { display: none; }
+.back-fab:active { opacity: 1; transform: scale(.94); }
+.back-fab:focus-visible { opacity: 1; outline: 2px solid var(--cyber-primary-light); outline-offset: 2px; }
+@media (hover: hover) { .back-fab:hover { opacity: .95; } }
+
+/* ===== 安装引导提示条 ===== */
+
+.install-hint {
+  position: fixed;
+  left: 50%;
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: min(560px, calc(100% - 24px));
+  padding: 12px 14px;
+  border: 1px solid var(--cyber-border-strong, rgba(59, 130, 246, .48));
+  border-radius: 10px;
+  background: rgba(15, 23, 42, .92);
+  color: var(--cyber-text-secondary, #cbd5e1);
+  font-size: 13px;
+  line-height: 1.5;
+  transform: translateX(-50%);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  animation: install-hint-in .24s ease-out;
+}
+
+.install-hint span { flex: 1; min-width: 0; }
+.install-hint b { color: var(--cyber-primary-light, #60a5fa); }
+
+.install-hint__action,
+.install-hint__dismiss {
+  flex: none;
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 7px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.install-hint__action {
+  border: 1px solid var(--cyber-primary, #3b82f6);
+  background: var(--cyber-primary, #3b82f6);
+  color: #fff;
+  font-weight: 600;
+}
+
+.install-hint__dismiss {
+  min-width: 34px;
+  padding: 0;
+  border: 1px solid var(--cyber-border, rgba(59, 130, 246, .28));
+  background: transparent;
+  color: var(--cyber-text-dim, #94a3b8);
+  font-size: 18px;
+  line-height: 1;
+}
+
+@keyframes install-hint-in {
+  from { opacity: 0; transform: translate(-50%, 8px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .install-hint { animation: none; }
+  .back-fab { transition: none; }
+}
+
+

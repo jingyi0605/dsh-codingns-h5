@@ -2,9 +2,24 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- viewport-fit=cover 让页面铺满刘海屏，配合 env(safe-area-inset-*) 使用。 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="description" content="DSH Web 远程访问" />
     <title>DSH Web | Codingns4DSH</title>
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <meta name="theme-color" content="#101216" />
+    <meta name="color-scheme" content="dark light" />
+
+    <!-- iOS：Safari 不读取 manifest 的 display，必须用 apple-mobile-web-app-* 才能全屏启动。 -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="DSH Web" />
+    <!-- iOS 只接受 PNG 的 apple-touch-icon，不接受 SVG。 -->
+    <link rel="apple-touch-icon" sizes="180x180" href="./apple-touch-icon.png" />
+    <link rel="icon" type="image/png" sizes="32x32" href="./favicon-32.png" />
+    <link rel="icon" type="image/svg+xml" href="./logo.svg" />
+
     <link rel="stylesheet" href="./styles.css?v=20260929-1137" />
   </head>
   <body>
@@ -16,6 +31,16 @@
         <canvas class="particle-canvas"></canvas>
       </div>
       <div class="scanlines" aria-hidden="true"></div>
+
+      <!--
+        后退手势层：iOS 主屏 Web App 没有 Safari 的边缘滑动返回，
+        Android 的系统返回键也只映射到 history.back()，因此统一由 JS 接管。
+      -->
+      <div class="back-gesture-zone" data-back-gesture-zone aria-hidden="true"></div>
+      <button class="back-fab" data-back-button type="button" aria-label="返回设备列表" hidden>
+        <span aria-hidden="true">‹</span>
+      </button>
+
       <div class="cyber-login-container">
         <div class="cyber-login-content">
           <div class="cyber-brand">
@@ -31,6 +56,7 @@
       </div>
     </main>
     <script src="./config.js"></script>
+    <script src="./pwa.js"></script>
     <script src="./runtime.js?v=20260929-1247"></script>
     <script type="module" src="./app.js?v=20260929-1137"></script>
   </body>
