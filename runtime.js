@@ -590,6 +590,7 @@
 		listeners = /* @__PURE__ */ new Set();
 		multiplexer;
 		currentCarrier;
+		unsubscribeCarrierClosed;
 		generation;
 		constructor(options) {
 			this.options = options;
@@ -604,6 +605,7 @@
 				...options.flowControl ? { flowControl: options.flowControl } : {},
 				...options.debug ? { debug: options.debug } : {}
 			});
+			this.bindCarrierClosed(options.carrier);
 		}
 		rpc(request) {
 			return this.multiplexer.request("rpc", request, request.signal);
@@ -672,6 +674,7 @@
 			this.multiplexer.replaceCarrier(carrier);
 			this.multiplexer.setSession(session);
 			this.currentCarrier = carrier;
+			this.bindCarrierClosed(carrier);
 			this.updateGeneration(generation);
 		}
 		/** 物理连接失效时立即结束旧请求和旧 generation。 */
@@ -682,11 +685,19 @@
 			if (previous) for (const listener of [...this.listeners]) listener(void 0);
 		}
 		close() {
+			this.unsubscribeCarrierClosed?.();
+			this.unsubscribeCarrierClosed = void 0;
 			this.multiplexer.close();
 			const previous = this.generation;
 			this.generation = void 0;
 			if (previous) for (const listener of [...this.listeners]) listener(void 0);
 			return this.currentCarrier.close();
+		}
+		bindCarrierClosed(carrier) {
+			this.unsubscribeCarrierClosed?.();
+			this.unsubscribeCarrierClosed = carrier.onClosed?.((reason) => {
+				this.invalidateConnection(new Error(reason ?? "Transport Carrier 已关闭"));
+			});
 		}
 		/** 给 pre-Cordis 启动胶水使用，不直接安装 DSH Connection。 */
 		asTransportHooks() {
@@ -1462,7 +1473,7 @@
 			const state = peerConnection;
 			const value = state.connectionState ?? state.iceConnectionState;
 			debug.log("webrtc.peer.state", { state: value ?? "unknown" });
-			if (value === "failed" || value === "disconnected" || value === "closed") notifyClosed(/* @__PURE__ */ new Error(`PeerConnection ${value}`));
+			if (value === "failed" || value === "closed") notifyClosed(/* @__PURE__ */ new Error(`PeerConnection ${value}`));
 		};
 		signaling.addEventListener("close", onSignalingClose);
 		signaling.addEventListener("error", onSignalingError);
@@ -2776,10 +2787,13 @@
 		const attachConnectionClose = (current) => {
 			current.onClosed((error) => {
 				if (stopped || current !== connection) return;
+				const reason = error ?? /* @__PURE__ */ new Error("WebRTC connection closed");
 				debug.log("bootstrap.connection.closed", {
 					generation,
-					error: error?.message ?? "closed"
+					error: reason.message
 				});
+				transport.invalidateConnection(reason);
+				session?.close(reason.message);
 				reconnectTimer = setTimeout(() => {
 					reconnectTimer = void 0;
 					reconnect();
