@@ -3,10 +3,18 @@ const controlApiBaseUrl = String(config.controlApiBaseUrl ?? "").replace(/\/+$/,
 const sessionStorageKey = "codingns4dsh.h5.session";
 const activeDeviceStorageKey = "codingns4dsh.h5.active-device";
 const app = document.querySelector("#app");
+// 心跳阈值只作为控制站缺少 online 字段时的兜底；设备列表会周期性重新拉取，
+// lastHeartbeatAt 不会再像只拉取一次时那样停留在页面加载时的快照上。
+const deviceHeartbeatTimeoutMs = 45_000;
+const devicePresenceTickMs = 1_000;
+const deviceRefreshIntervalMs = 15_000;
 
 let session = readSession();
 let activeRuntime = null;
-let deviceStatusTimer = null;
+let devicePresenceTimer = null;
+let deviceRefreshTimer = null;
+let deviceRefreshInFlight = false;
+let devicePresence = new Map();
 let logoutInProgress = false;
 
 window.addEventListener("message", (event) => {
@@ -14,6 +22,12 @@ window.addEventListener("message", (event) => {
   if (iframeWindow === null || iframeWindow === undefined || event.source !== iframeWindow) return;
   if (event.data?.kind !== "codingns4dsh:remote-logout") return;
   void logoutBrowserSession();
+});
+
+// 后台标签页的定时器会被浏览器节流，回到前台时立即补一次同步，避免展示过期状态。
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible" || devicePresenceTimer === null) return;
+  void refreshDeviceList();
 });
 
 // 页面刷新或关闭时必须释放 WebRTC、信令和 iframe WebSocket，避免 Relay 房间
@@ -32,7 +46,7 @@ function setRemoteWebMode(enabled) {
 }
 
 function render() {
-  stopDeviceStatusTimer();
+  stopDeviceTimers();
   document.body.classList.remove("dsh-device-list-mode");
   setRemoteWebMode(false);
   if (!session) {
@@ -97,7 +111,7 @@ function renderLogin(errorMessage = "") {
 }
 
 async function renderDevices() {
-  stopDeviceStatusTimer();
+  stopDeviceTimers();
   document.body.classList.add("dsh-device-list-mode");
   setRemoteWebMode(false);
   app.innerHTML = `
@@ -105,47 +119,83 @@ async function renderDevices() {
   `;
 
   try {
-    const response = await request("/api/v1/dsh/devices");
-    const devices = Array.isArray(response.devices) ? response.devices.map(normalizeDevice) : [];
-    // 控制站会返回账号下全部 DSH 设备；离线设备保留在列表中，避免用户误以为设备已被删除。
-    const visibleDevices = devices.filter((device) => device.status === "active" || device.status === "disabled");
-    app.innerHTML = `
-      <div class="panel-heading">
-        <div>
-          <p class="eyebrow">${escapeHtml(session.email ?? "已登录")}</p>
-          <h2>选择 DSH Host</h2>
-        </div>
-        <button class="quiet" id="logout" type="button">退出</button>
-      </div>
-      ${visibleDevices.length === 0 ? `<p class="empty">当前没有已注册的 DSH Host。</p>` : `<div class="device-list">${visibleDevices.map(deviceCard).join("")}</div>`}
-      <p id="status" class="muted status" role="status"></p>
-    `;
-    document.querySelector("#logout").addEventListener("click", async () => {
-      await logoutBrowserSession();
-    });
-    for (const button of document.querySelectorAll("[data-device-id]")) {
-      button.addEventListener("click", () => startBootstrap(button.dataset.deviceId));
-    }
-    for (const button of document.querySelectorAll("[data-remove-device]")) {
-      button.addEventListener("click", () => void removeDevice(button.dataset.removeDevice, button));
-    }
-    refreshDevicePresenceLabels();
-    deviceStatusTimer = window.setInterval(refreshDevicePresenceLabels, 1000);
+    const devices = await fetchVisibleDevices();
+    renderDeviceList(devices);
+    devicePresenceTimer = window.setInterval(refreshDevicePresence, devicePresenceTickMs);
+    deviceRefreshTimer = window.setInterval(() => void refreshDeviceList(), deviceRefreshIntervalMs);
     const rememberedDeviceId = sessionStorage.getItem(activeDeviceStorageKey);
-    if (rememberedDeviceId && visibleDevices.some((device) => device.dshDeviceId === rememberedDeviceId && device.online)) {
+    if (rememberedDeviceId && devices.some((device) => device.dshDeviceId === rememberedDeviceId && isDeviceOnline(device))) {
       // 让设备列表先完成挂载，再启动自动恢复，确保状态节点可更新。
       queueMicrotask(() => startBootstrap(rememberedDeviceId));
     }
   } catch (error) {
     if (error instanceof ApiError && error.status === 401) {
-      session = null;
-      sessionStorage.removeItem(sessionStorageKey);
-      sessionStorage.removeItem(activeDeviceStorageKey);
-      renderLogin("登录已过期，请重新登录");
+      expireSession();
       return;
     }
     app.innerHTML = `<p class="error">${escapeHtml(error instanceof Error ? error.message : "读取设备失败")}</p>`;
   }
+}
+
+function renderDeviceList(devices) {
+  devicePresence = new Map(devices.map((device) => [device.dshDeviceId, device]));
+  app.innerHTML = `
+    <div class="panel-heading">
+      <div>
+        <p class="eyebrow">${escapeHtml(session.email ?? "已登录")}</p>
+        <h2>选择 DSH Host</h2>
+      </div>
+      <button class="quiet" id="logout" type="button">退出</button>
+    </div>
+    ${devices.length === 0 ? `<p class="empty">当前没有已注册的 DSH Host。</p>` : `<div class="device-list">${devices.map(deviceCard).join("")}</div>`}
+    <p id="status" class="muted status" role="status"></p>
+  `;
+  document.querySelector("#logout").addEventListener("click", async () => {
+    await logoutBrowserSession();
+  });
+  for (const button of document.querySelectorAll("[data-device-id]")) {
+    button.addEventListener("click", () => startBootstrap(button.dataset.deviceId));
+  }
+  for (const button of document.querySelectorAll("[data-remove-device]")) {
+    button.addEventListener("click", () => void removeDevice(button.dataset.removeDevice, button));
+  }
+  refreshDevicePresence();
+}
+
+async function fetchVisibleDevices() {
+  const response = await request("/api/v1/dsh/devices", { cache: "no-store" });
+  const devices = Array.isArray(response.devices) ? response.devices.map(normalizeDevice) : [];
+  // 控制站会返回账号下全部 DSH 设备；离线设备保留在列表中，避免用户误以为设备已被删除。
+  return devices.filter((device) => device.status === "active" || device.status === "disabled");
+}
+
+// 设备列表只在进入页面时拉取一次时，在线判定会停在加载时的心跳快照上：页面静置超过心跳
+// 阈值后所有设备都会被误判为离线，直到刷新页面重新拉取。这里定期重新拉取，
+// 设备集合不变时就地更新状态，避免列表在用户操作过程中被重建。
+async function refreshDeviceList() {
+  if (deviceRefreshInFlight || logoutInProgress || devicePresenceTimer === null) return;
+  deviceRefreshInFlight = true;
+  try {
+    const devices = await fetchVisibleDevices();
+    if (devicePresenceTimer === null) return;
+    applyDeviceSnapshot(devices);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 401) expireSession();
+  } finally {
+    deviceRefreshInFlight = false;
+  }
+}
+
+function applyDeviceSnapshot(devices) {
+  const cards = [...document.querySelectorAll(".device-card")];
+  const sameLayout = cards.length === devices.length
+    && cards.every((card, index) => card.dataset.deviceCard === devices[index].dshDeviceId);
+  if (!sameLayout) {
+    renderDeviceList(devices);
+    return;
+  }
+  devicePresence = new Map(devices.map((device) => [device.dshDeviceId, device]));
+  refreshDevicePresence();
 }
 
 async function logoutBrowserSession() {
@@ -160,6 +210,16 @@ async function logoutBrowserSession() {
   sessionStorage.removeItem(activeDeviceStorageKey);
   render();
   logoutInProgress = false;
+}
+
+// 会话过期时统一回到登录页并停掉设备列表定时器，
+// 否则轮询会持续收到 401 并反复重绘登录表单。
+function expireSession() {
+  session = null;
+  sessionStorage.removeItem(sessionStorageKey);
+  sessionStorage.removeItem(activeDeviceStorageKey);
+  stopDeviceTimers();
+  renderLogin("登录已过期，请重新登录");
 }
 
 // 设备列表是跨版本边界，兼容旧控制站可能返回的下划线字段，避免明细因 DTO 命名差异丢失。
@@ -177,14 +237,13 @@ function normalizeDevice(device) {
 function deviceCard(device) {
   const id = escapeHtml(device.dshDeviceId);
   const name = escapeHtml(device.displayName || device.dshDeviceId);
-  const heartbeat = escapeHtml(device.lastHeartbeatAt ?? "");
-  const online = device.status === "active" && device.online;
+  const online = isDeviceOnline(device);
   return `
-    <article class="device-card" data-status="${escapeHtml(device.status)}" data-online="${online ? "true" : "false"}">
+    <article class="device-card" data-device-card="${id}" data-status="${escapeHtml(device.status ?? "")}" data-online="${online ? "true" : "false"}">
       <div>
         <div class="device-card__title"><span class="device-status-dot" aria-hidden="true"></span><h3>${name}</h3><span class="mono device-id" title="${id}">${id}</span></div>
         <p class="muted device-details"><span>版本：${escapeHtml(device.dshVersion || "未知")}</span><span>计算机名：${escapeHtml(device.computerName || "未知")}</span></p>
-        <p class="muted device-heartbeat" data-heartbeat="${heartbeat}" data-online="${online ? "true" : "false"}">${formatDevicePresence(device)}</p>
+        <p class="muted device-heartbeat" data-online="${online ? "true" : "false"}"${online ? " hidden" : ""}></p>
       </div>
       <div class="device-card__actions">
         <button class="primary" data-device-id="${id}" type="button" ${online ? "" : "disabled"}>${online ? "连接" : "不可用"}</button>
@@ -214,6 +273,7 @@ async function removeDevice(deviceId, trigger) {
   try {
     await request(`/api/v1/dsh/devices/${encodeURIComponent(deviceId)}`, { method: "DELETE" });
     if (sessionStorage.getItem(activeDeviceStorageKey) === deviceId) sessionStorage.removeItem(activeDeviceStorageKey);
+    devicePresence.delete(deviceId);
     const list = card.parentElement;
     card.remove();
     if (list && list.querySelectorAll(".device-card").length === 0) {
@@ -223,10 +283,7 @@ async function removeDevice(deviceId, trigger) {
   } catch (error) {
     setBusy(trigger, false);
     if (error instanceof ApiError && error.status === 401) {
-      session = null;
-      sessionStorage.removeItem(sessionStorageKey);
-      sessionStorage.removeItem(activeDeviceStorageKey);
-      renderLogin("登录已过期，请重新登录");
+      expireSession();
       return;
     }
     status.className = "status error";
@@ -237,7 +294,7 @@ async function removeDevice(deviceId, trigger) {
 async function startBootstrap(deviceId) {
   const status = document.querySelector("#status");
   const buttons = [...document.querySelectorAll("[data-device-id]")];
-  stopDeviceStatusTimer();
+  stopDeviceTimers();
   buttons.forEach((button) => setBusy(button, true));
     status.textContent = "正在申请 Client ticket…";
   try {
@@ -260,7 +317,7 @@ async function startBootstrap(deviceId) {
               : "正在读取远程 DSH Web…";
       },
     });
-    stopDeviceStatusTimer();
+    stopDeviceTimers();
     sessionStorage.setItem(activeDeviceStorageKey, deviceId);
     setRemoteWebMode(true);
     window.dispatchEvent(new CustomEvent("dsh-bootstrap-ready", { detail: { deviceId, runtime: activeRuntime } }));
@@ -275,37 +332,58 @@ async function startBootstrap(deviceId) {
   }
 }
 
-function stopDeviceStatusTimer() {
-  if (deviceStatusTimer === null) return;
-  window.clearInterval(deviceStatusTimer);
-  deviceStatusTimer = null;
-}
-
-function refreshDevicePresenceLabels() {
-  for (const element of document.querySelectorAll("[data-heartbeat]")) {
-    const heartbeat = element.getAttribute("data-heartbeat") || "";
-    const card = element.closest(".device-card");
-    const active = card?.getAttribute("data-status") === "active";
-    const online = active && heartbeat !== "" && Date.now() - Date.parse(heartbeat) < 45_000;
-    card?.setAttribute("data-online", online ? "true" : "false");
-    element.setAttribute("data-online", online ? "true" : "false");
-    const button = card?.querySelector("[data-device-id]");
-    if (button instanceof HTMLButtonElement) {
-      button.disabled = !online;
-      button.textContent = online ? "连接" : "不可用";
-    }
-    // 设备恢复心跳后立即收回删除入口，避免误删正在使用的设备。
-    const removeButton = card?.querySelector("[data-remove-device]");
-    if (removeButton instanceof HTMLButtonElement) removeButton.hidden = online;
-    element.textContent = formatDevicePresence({
-      online,
-      lastHeartbeatAt: heartbeat || null,
-    });
+function stopDeviceTimers() {
+  if (devicePresenceTimer !== null) {
+    window.clearInterval(devicePresenceTimer);
+    devicePresenceTimer = null;
+  }
+  if (deviceRefreshTimer !== null) {
+    window.clearInterval(deviceRefreshTimer);
+    deviceRefreshTimer = null;
   }
 }
 
+function refreshDevicePresence() {
+  for (const card of document.querySelectorAll(".device-card")) {
+    const device = devicePresence.get(card.dataset.deviceCard);
+    if (device) applyDevicePresence(card, device);
+  }
+}
+
+// 在线设备只保留状态指示器，心跳时间只在离线时展示；
+// 状态取自最近一次拉取的设备快照，不会随页面静置而自行变成离线。
+function applyDevicePresence(card, device) {
+  const online = isDeviceOnline(device);
+  card.setAttribute("data-status", device.status ?? "");
+  card.setAttribute("data-online", online ? "true" : "false");
+
+  const presence = card.querySelector(".device-heartbeat");
+  if (presence instanceof HTMLElement) {
+    presence.setAttribute("data-online", online ? "true" : "false");
+    presence.hidden = online;
+    presence.textContent = online ? "" : formatDevicePresence(device);
+  }
+
+  const connectButton = card.querySelector("[data-device-id]");
+  if (connectButton instanceof HTMLButtonElement) {
+    connectButton.disabled = !online;
+    connectButton.textContent = online ? "连接" : "不可用";
+  }
+
+  // 设备恢复心跳后立即收回删除入口，避免误删正在使用的设备。
+  const removeButton = card.querySelector("[data-remove-device]");
+  if (removeButton instanceof HTMLButtonElement) removeButton.hidden = online;
+}
+
+// 优先采用控制站返回的在线判定；旧控制站没有该字段时，用最近一次心跳兜底。
+function isDeviceOnline(device) {
+  if (device.status !== "active") return false;
+  if (typeof device.online === "boolean") return device.online;
+  const timestamp = Date.parse(device.lastHeartbeatAt ?? "");
+  return Number.isFinite(timestamp) && Date.now() - timestamp < deviceHeartbeatTimeoutMs;
+}
+
 function formatDevicePresence(device) {
-  if (device.online) return device.lastHeartbeatAt ? `在线 · 最后心跳 ${formatElapsed(device.lastHeartbeatAt)}前` : "在线 · 等待首个心跳";
   if (!device.lastHeartbeatAt) return "离线 · 从未连接";
   return `离线 · ${formatElapsed(device.lastHeartbeatAt)}前`;
 }
@@ -394,6 +472,7 @@ async function request(pathname, options = {}) {
   const response = await fetch(`${controlApiBaseUrl}${pathname}`, {
     method: options.method ?? "GET",
     headers,
+    cache: options.cache,
     credentials: "include",
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
   });
